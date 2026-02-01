@@ -139,7 +139,8 @@ def _build_table(tasks: List[Task], now_ts: float) -> Table:
 
 @app.command()
 def dashboard(
-    sheet_id: str = typer.Option("", help="Google Sheet ID for Jobs tab (relevant-only)."),
+    sheet_id: str = typer.Option("", help="Google Sheet ID."),
+    jobs_today_tab: str = typer.Option("Jobs_Today", help="Tab where scraper appends new relevant jobs."),
     all_jobs_tab: str = typer.Option("All jobs", help="Tab name for full DB export."),
     interval_min: int = typer.Option(20, help="Full cycle interval minutes."),
     log_csv: Path = typer.Option(DEFAULT_LOG, help="CSV run log path."),
@@ -169,6 +170,8 @@ def dashboard(
                 "--once",
                 "--sheet-id",
                 sheet_id,
+                "--sheet-tab",
+                jobs_today_tab,
             ],
         )
         for s in sources
@@ -247,6 +250,19 @@ def dashboard(
             for _ in range(int(sleep_s)):
                 live.update(_build_table(tasks, time.time()))
                 time.sleep(1)
+
+
+@app.command()
+def transfer_today(
+    sheet_id: str = typer.Argument(...),
+    from_tab: str = typer.Option("Jobs_Today", help="Source tab (scraper output)."),
+    to_tab: str = typer.Option("Jobs", help="Destination tab (your workflow + dropdown)."),
+) -> None:
+    """Move all rows from Jobs_Today into Jobs, then clear Jobs_Today."""
+    from .transfer_today import TransferConfig, transfer_today
+
+    n = transfer_today(TransferConfig(sheet_id=sheet_id, from_tab=from_tab, to_tab=to_tab))
+    console.print(f"moved_rows={n}")
 
 
 @app.command()
