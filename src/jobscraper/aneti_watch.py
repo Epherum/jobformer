@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
+from jobscraper.filtering import is_relevant
 from jobscraper.sources.aneti import AnetiConfig, scrape_aneti
 
 
@@ -22,7 +23,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--cdp", required=True, help="CDP url, e.g. http://172.25.192.1:9223")
     ap.add_argument("--state", default="data/aneti_state.json")
-    ap.add_argument("--max-offers", type=int, default=25)
+    ap.add_argument("--max-offers", type=int, default=50, help="Safety cap. Still only first page.")
     args = ap.parse_args()
 
     cfg = AnetiConfig(cdp_url=args.cdp, max_offers=args.max_offers)
@@ -32,27 +33,32 @@ def main() -> int:
         print("aneti_watch: no jobs")
         return 2
 
-    first_id = jobs[0].external_id
+    current_ids = [j.external_id for j in jobs]
 
     state_path = Path(args.state)
     state = load_state(state_path)
-    last = state.get("last_first_id")
+    prev_ids = state.get("seen_ids")
 
-    if last is None:
-        state["last_first_id"] = first_id
+    if prev_ids is None:
+        state["seen_ids"] = current_ids
         save_state(state_path, state)
-        print(f"aneti_watch: initialized last_first_id={first_id}")
+        print(f"aneti_watch: initialized seen_ids={len(current_ids)}")
         return 0
 
-    if str(first_id) != str(last):
-        state["last_first_id"] = first_id
-        save_state(state_path, state)
-        print(f"aneti_watch: NEW first offer (was different)")
-        print(f"url: {jobs[0].url}")
-        print(f"title: {jobs[0].title}")
+    prev_set = set(prev_ids)
+    new_jobs = [j for j in jobs if j.external_id not in prev_set]
+    new_relevant = [j for j in new_jobs if is_relevant(j.title)]
+
+    state["seen_ids"] = current_ids
+    save_state(state_path, state)
+
+    if new_relevant:
+        print(f"aneti_watch: NEW relevant={len(new_relevant)} (new_total={len(new_jobs)})")
+        for j in new_relevant[:10]:
+            print(f"NEW: {j.title} | {j.url}")
         return 1
 
-    print("aneti_watch: unchanged")
+    print(f"aneti_watch: no new relevant (new_total={len(new_jobs)})")
     return 0
 
 
