@@ -91,7 +91,12 @@ class JobDB:
 
                 new_title = job.title
                 # If we accidentally stored garbage titles, upgrade them.
-                bad_title = (existing_title.strip() in {"", "(unknown)"}) or ("annonces trouv" in existing_title.lower())
+                bad_title = (
+                    (existing_title.strip() in {"", "(unknown)"})
+                    or ("annonces trouv" in existing_title.lower())
+                    or ("offres et demandes" in existing_title.lower())
+                    or ("offres disponibles" in existing_title.lower())
+                )
 
                 set_title = new_title if (bad_title and new_title and new_title != "(unknown)") else existing_title
                 set_posted_at = posted_at if (existing_posted_at is None and posted_at is not None) else existing_posted_at
