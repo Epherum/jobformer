@@ -34,7 +34,6 @@ def ensure_jobs_header(cfg: SheetsConfig) -> None:
         "url",
         "labels",
         "decision",
-        "decision_at",
         "notes",
     ]]
     _run_gog(
@@ -43,7 +42,7 @@ def ensure_jobs_header(cfg: SheetsConfig) -> None:
             "sheets",
             "update",
             cfg.sheet_id,
-            f"{cfg.tab}!A1:J1",
+            f"{cfg.tab}!A1:I1",
             "--account",
             cfg.account,
             "--values-json",
@@ -62,7 +61,7 @@ def append_jobs(cfg: SheetsConfig, jobs: Sequence[Job], date_label: str) -> None
     for j in jobs:
         labels = ",".join(match_labels(j.title))
         # decision/decision_at/notes intentionally left blank; managed in Sheets.
-        rows.append([date_label, j.source, j.title, j.company, j.location, j.url, labels, "", "", ""])
+        rows.append([date_label, j.source, j.title, j.company, j.location, j.url, labels, "", ""]) 
 
     _run_gog(
         [
@@ -70,7 +69,7 @@ def append_jobs(cfg: SheetsConfig, jobs: Sequence[Job], date_label: str) -> None
             "sheets",
             "append",
             cfg.sheet_id,
-            f"{cfg.tab}!A:J",
+            f"{cfg.tab}!A:I",
             "--account",
             cfg.account,
             "--values-json",
