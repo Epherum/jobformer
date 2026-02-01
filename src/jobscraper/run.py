@@ -10,6 +10,7 @@ from .sources.wttj import WTTJConfig, scrape_wttj
 from .sources.weworkremotely import WWRConfig, scrape_weworkremotely
 from .sources.remoteok import RemoteOKConfig, scrape_remoteok
 from .sources.remotive import RemotiveConfig, scrape_remotive
+from .sources.aneti import AnetiConfig, scrape_aneti
 from .filtering import is_relevant
 from .sheets_sync import SheetsConfig, append_jobs, ensure_jobs_header
 
@@ -18,7 +19,7 @@ def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument(
         "--source",
-        choices=["tanitjobs", "keejob", "welcometothejungle", "weworkremotely", "remoteok", "remotive"],
+        choices=["tanitjobs", "keejob", "welcometothejungle", "weworkremotely", "remoteok", "remotive", "aneti"],
         required=True,
     )
     p.add_argument("--once", action="store_true", help="Run once and exit")
@@ -135,6 +136,23 @@ def main() -> int:
         print(f"remotive: scraped={len(jobs)} new={len(new_jobs)} relevant_new={len(relevant_new)}")
         for j in relevant_new[:20]:
             print(f"NEW: {j.title} | {j.company} | {j.url}")
+
+        if args.sheet_id:
+            scfg = SheetsConfig(sheet_id=args.sheet_id, tab=args.sheet_tab, account=args.sheet_account)
+            ensure_jobs_header(scfg)
+            append_jobs(scfg, relevant_new, date_label=date_label)
+
+    if args.source == "aneti":
+        # CDP-only: ANETI blocks our server IP, so we use your Windows Chrome session.
+        cfg = AnetiConfig(cdp_url="http://172.25.192.1:9223", max_offers=25)
+        jobs, date_label = scrape_aneti(cfg=cfg)
+        new_jobs = db.upsert_jobs(jobs)
+
+        relevant_new = [j for j in new_jobs if is_relevant(j.title)]
+
+        print(f"aneti: scraped={len(jobs)} new={len(new_jobs)} relevant_new={len(relevant_new)}")
+        for j in relevant_new[:20]:
+            print(f"NEW: {j.title} | {j.url}")
 
         if args.sheet_id:
             scfg = SheetsConfig(sheet_id=args.sheet_id, tab=args.sheet_tab, account=args.sheet_account)
