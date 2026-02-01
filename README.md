@@ -45,6 +45,18 @@ python -m jobscraper.run --source tanitjobs \
 - SQLite DB: `./data/jobs.sqlite3`
 - Debug HTML snapshots: `./debug/`
 
+## Alerts (ntfy)
+
+1) Install the ntfy app on your phone and subscribe to a topic.
+2) Store your topic locally (not committed):
+
+```bash
+mkdir -p data
+echo "wassim-job-alerts-7f3c9a2b" > data/ntfy_topic.txt
+```
+
+- Tier-1 sources: run with `--notify` to push an alert when `relevant_new > 0`.
+- Tier-2 watchers (tanitjobs/aneti): they push when they detect **new relevant** jobs on the first page.
+
 ## Next
-- Add notification (Discord/email)
-- Add cron/systemd timer
+- Add proper CLI wrapper (one command to run all + watch loop)
