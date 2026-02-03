@@ -16,7 +16,9 @@ class AppConfig:
     jobs_tab: str = "Jobs"
     jobs_today_tab: str = "Jobs_Today"
     all_jobs_tab: str = "All jobs"
-    cdp_url: str = "http://172.25.192.1:9223"
+    # Default CDP URL from WSL -> Windows host.
+    # Note: if Chrome binds only to 127.0.0.1 on Windows, use a portproxy rule.
+    cdp_url: str = "http://172.25.192.1:9224"
     interval_min: int = 20
 
 

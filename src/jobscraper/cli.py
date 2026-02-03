@@ -252,7 +252,7 @@ if (!(Test-Path $Chrome)) { $Chrome = "$env:ProgramFiles(x86)\\Google\\Chrome\\A
 $UserData = "$env:LOCALAPPDATA\\JobScraperChrome"
 
 Start-Process $Chrome -ArgumentList @(
-  "--remote-debugging-port=9223",
+  "--remote-debugging-port=9224", 
   "--user-data-dir=$UserData",
   """ + tanit_url + """,
   """ + aneti_url + """
