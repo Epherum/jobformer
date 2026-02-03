@@ -249,6 +249,10 @@ def is_blocked(text: str) -> bool:
 
 
 def decision_for_title(title: str) -> str:
+    # Only apply OVERSENIOR if the job is relevant in the first place.
+    # This avoids tagging random irrelevant jobs as OVERSENIOR.
+    if not is_relevant(title):
+        return DECISION_NEW
     return DECISION_TOO_SENIOR if is_too_senior(title) else DECISION_NEW
 
 
