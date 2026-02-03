@@ -1,0 +1,22 @@
+Simple CDP fix (WSL -> Windows) for JobScraper
+
+Goal
+- WSL needs to reach Chrome CDP on Windows.
+- Chrome listens on 127.0.0.1:9224.
+- WSL reaches Windows via 172.25.192.1.
+
+Steps
+1) Start Chrome with CDP:
+   chrome.exe --remote-debugging-port=9224 --user-data-dir=%LOCALAPPDATA%\JobScraperChrome
+
+2) In *Admin* PowerShell, expose it to WSL using portproxy:
+   netsh interface portproxy add v4tov4 listenaddress=172.25.192.1 listenport=9224 connectaddress=127.0.0.1 connectport=9224
+
+3) Allow inbound firewall:
+   New-NetFirewallRule -DisplayName "JobScraper CDP 9224 (WSL)" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 9224
+
+Test from WSL
+- curl -s http://172.25.192.1:9224/json/version
+
+Set in WSL
+- job-scraper/data/config.env: CDP_URL=http://172.25.192.1:9224
