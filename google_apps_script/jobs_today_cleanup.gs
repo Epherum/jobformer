@@ -22,22 +22,57 @@ const JOBS_TODAY_COL_TITLE = 3;
 
 // Edit this list freely. These are case-insensitive regex patterns.
 const NEGATIVE_TITLE_PATTERNS = [
-  // Seniority/leadership
+  // Seniority/leadership (broad)
   '\\bexecutive\\b',
   '\\bdirector\\b',
   '\\bdirecteur\\b',
   '\\bdirectrice\\b',
+  '\\bvp\\b',
+  '\\bvice\\s+president\\b',
+  '\\bhead\\s+of\\b',
+  '\\bchief\\b',
+  '\\bc\\-level\\b',
+  '\\bprincipal\\b',
+  '\\bstaff\\b',
+  '\\blead\\b',
   '\\bsenior\\b',
   '\\bsr\\b',
-  '\\bhead\\s+of\\b',
-  '\\bvp\\b',
+  '\\bconfirmé\\b',
+  '\\bconfirmée\\b',
+  // Very broad. Keep here for sheet cleanup. Might be too aggressive for scraper.
+  '\\bmanager\\b',
+  '\\barchitect\\b',
 
-  // Retail / cashier
+  // Sales-heavy pipeline roles
+  'sales\\s+development\\s+representative',
+  'business\\s+development\\s+representative',
+  '\\bsdr\\b',
+  '\\bbdr\\b',
+  'télévente',
+  'télévendeur',
+  'télévendeurs',
+  'televente',
+  'televendeur',
+  'televendeurs',
+
+  // Support roles
+  'customer\\s+care',
+  'customer\\s+support',
+  'service\\s+client',
+  '\\bit\\s+support\\b',
+  '\\bhelp\\s*desk\\b',
+
+  // Retail / cashier / service / logistics
   '\\bcaissier\\b',
   '\\bcaisse\\b',
   '\\bcashier\\b',
   '\\bvendeur\\b',
   '\\bvendeuse\\b',
+  '\\blivreur\\b',
+  '\\bcoursier\\b',
+  '\\bchauffeur\\b',
+  '\\bpréparateur\\b',
+  '\\bpreparateur\\b',
 
   // Non-software engineering / electrical
   'électricit',
@@ -51,16 +86,33 @@ const NEGATIVE_TITLE_PATTERNS = [
   'coffrage',
   'ferraillage',
 
-  // Manufacturing/quality
+  // Manufacturing/industrial/quality (broad)
+  'manufactur',
+  'industrialisation',
+  'maintenance\\s+industrielle',
+  'maintenance',
+  'automatisme',
   'assemblage',
   'contrôleur\\s+qualité',
   'controleur\\s+qualite',
   '\\bqualité\\b',
   '\\bqualite\\b',
 
-  // QA (if you want)
+  // QA/testing
   '\\bqa\\b',
+  'test(\\b|eur|euse)',
   'fonctionnel(?:le)?',
+
+  // Accounting/HR/marketing/product/video
+  'comptab',
+  'finance\\b',
+  'ressources\\s+humaines',
+  '\\brh\\b',
+  'marketing\\b',
+  'chef\\s+de\\s+produit',
+  'product\\s+manager',
+  'video\\s+editor',
+  'monteur\\s+vid(?:é|e)o',
 ];
 
 function purgeJobsTodayNotAFitByTitle() {
