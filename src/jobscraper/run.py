@@ -15,16 +15,17 @@ from .sources.weworkremotely import WWRConfig, scrape_weworkremotely
 from .sources.remoteok import RemoteOKConfig, scrape_remoteok
 from .sources.remotive import RemotiveConfig, scrape_remotive
 from .sources.aneti import AnetiConfig, scrape_aneti
+from .sources.linkedin_cdp import LinkedInCDPConfig, scrape_linkedin_first_page
 from .filtering import is_relevant
 from .sheets_sync import SheetsConfig, append_jobs, ensure_jobs_header
-from .alerts.ntfy import send_many
+from .alerts.pushover import send_summary
 
 
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument(
         "--source",
-        choices=["tanitjobs", "keejob", "welcometothejungle", "weworkremotely", "remoteok", "remotive", "aneti"],
+        choices=["tanitjobs", "keejob", "welcometothejungle", "weworkremotely", "remoteok", "remotive", "aneti", "linkedin"],
         required=True,
     )
     p.add_argument("--once", action="store_true", help="Run once and exit")
@@ -33,6 +34,11 @@ def main() -> int:
         "--tanitjobs-url",
         default=None,
         help="Override Tanitjobs search URL (include your query params)",
+    )
+    p.add_argument(
+        "--linkedin-url",
+        default=None,
+        help="Override LinkedIn search URL (defaults to env LINKEDIN_URL).",
     )
     p.add_argument(
         "--browser-channel",
@@ -45,7 +51,7 @@ def main() -> int:
         help="Persistent browser profile directory. Use with care; on Windows Edge it's typically %%LOCALAPPDATA%%\\Microsoft\\Edge\\User Data. Close Edge first.",
     )
     p.add_argument("--sheet-id", default=None, help="Google Sheet ID to append new relevant jobs to")
-    p.add_argument("--notify", action="store_true", help="Send ntfy notification when relevant_new > 0")
+    p.add_argument("--notify", action="store_true", help="Send Pushover notification when relevant_new > 0")
     p.add_argument("--sheet-tab", default="Jobs", help="Sheet tab name")
     p.add_argument("--sheet-account", default="wassimfekih2@gmail.com", help="gog account email")
     args = p.parse_args()
@@ -100,7 +106,7 @@ def main() -> int:
 
         if args.notify and relevant_new:
             lines = [f"{j.title}\n{j.url}" for j in relevant_new]
-            send_many(title=f"tanitjobs: {len(relevant_new)} new relevant", lines=lines, tags=["briefcase"], priority=4)
+            send_summary(title=f"tanitjobs: {len(relevant_new)} new relevant", lines=lines)
 
     if args.source == "keejob":
         cfg = KeejobConfig(today_only=True)
@@ -120,7 +126,7 @@ def main() -> int:
 
         if args.notify and relevant_new:
             lines = [f"{j.title} | {j.url}" for j in relevant_new]
-            send_many(title=f"Keejob: {len(relevant_new)} new relevant", lines=lines, tags=["briefcase"], priority=4)
+            send_summary(title=f"Keejob: {len(relevant_new)} new relevant", lines=lines)
 
     if args.source == "welcometothejungle":
         cfg = WTTJConfig(days=1, max_detail_pages=40, max_per_company=5)
@@ -140,7 +146,7 @@ def main() -> int:
 
         if args.notify and relevant_new:
             lines = [f"{j.title} | {j.url}" for j in relevant_new]
-            send_many(title=f"welcometothejungle: {len(relevant_new)} new relevant", lines=lines, tags=["briefcase"], priority=4)
+            send_summary(title=f"welcometothejungle: {len(relevant_new)} new relevant", lines=lines)
 
     if args.source == "weworkremotely":
         cfg = WWRConfig()
@@ -160,7 +166,7 @@ def main() -> int:
 
         if args.notify and relevant_new:
             lines = [f"{j.title} | {j.url}" for j in relevant_new]
-            send_many(title=f"weworkremotely: {len(relevant_new)} new relevant", lines=lines, tags=["briefcase"], priority=4)
+            send_summary(title=f"weworkremotely: {len(relevant_new)} new relevant", lines=lines)
 
     if args.source == "remoteok":
         cfg = RemoteOKConfig()
@@ -180,7 +186,7 @@ def main() -> int:
 
         if args.notify and relevant_new:
             lines = [f"{j.title} | {j.url}" for j in relevant_new]
-            send_many(title=f"remoteok: {len(relevant_new)} new relevant", lines=lines, tags=["briefcase"], priority=4)
+            send_summary(title=f"remoteok: {len(relevant_new)} new relevant", lines=lines)
 
     if args.source == "remotive":
         cfg = RemotiveConfig()
@@ -200,11 +206,12 @@ def main() -> int:
 
         if args.notify and relevant_new:
             lines = [f"{j.title} | {j.url}" for j in relevant_new]
-            send_many(title=f"remotive: {len(relevant_new)} new relevant", lines=lines, tags=["briefcase"], priority=4)
+            send_summary(title=f"remotive: {len(relevant_new)} new relevant", lines=lines)
 
     if args.source == "aneti":
         # CDP-only: ANETI blocks our server IP, so we use your Windows Chrome session.
-        cfg = AnetiConfig(cdp_url="http://172.25.192.1:9223", max_offers=25)
+        cdp_url = os.getenv("CDP_URL", "http://172.25.192.1:9223").strip() or "http://172.25.192.1:9223"
+        cfg = AnetiConfig(cdp_url=cdp_url, max_offers=25)
         jobs, _date_label = scrape_aneti(cfg=cfg)
         new_jobs = db.upsert_jobs(jobs)
 
@@ -219,9 +226,33 @@ def main() -> int:
             ensure_jobs_header(scfg)
             append_jobs(scfg, relevant_new, date_label=today_label)
 
+    if args.source == "linkedin":
+        # CDP-only: use your logged-in Windows Chrome.
+        cdp_url = os.getenv("CDP_URL", "http://172.25.192.1:9223").strip() or "http://172.25.192.1:9223"
+        url = (
+            args.linkedin_url
+            or (os.getenv("LINKEDIN_URL") or "").strip()
+            or "https://www.linkedin.com/jobs/search/?geoId=102134353&f_TPR=r7200&sortBy=DD"
+        )
+
+        cfg = LinkedInCDPConfig(cdp_url=cdp_url, url=url, max_jobs=80)
+        jobs, _reason = scrape_linkedin_first_page(cfg=cfg)
+        new_jobs = db.upsert_jobs(jobs)
+
+        relevant_new = [j for j in new_jobs if is_relevant(j.title)]
+
+        print(f"linkedin: scraped={len(jobs)} new={len(new_jobs)} relevant_new={len(relevant_new)}")
+        for j in relevant_new[:20]:
+            print(f"NEW: {j.title} | {j.company} | {j.location} | {j.url}")
+
+        if args.sheet_id:
+            scfg = SheetsConfig(sheet_id=args.sheet_id, tab=args.sheet_tab, account=args.sheet_account)
+            ensure_jobs_header(scfg)
+            append_jobs(scfg, relevant_new, date_label=today_label)
+
         if args.notify and relevant_new:
             lines = [f"{j.title} | {j.url}" for j in relevant_new]
-            send_many(title=f"aneti: {len(relevant_new)} new relevant", lines=lines, tags=["briefcase"], priority=4)
+            send_summary(title=f"LinkedIn: {len(relevant_new)} new relevant", lines=lines)
 
     db.close()
     return 0

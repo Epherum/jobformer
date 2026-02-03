@@ -50,6 +50,7 @@ SUSPICIOUS_ZERO_SCRAPE = {
     "remoteok",
     "tanitjobs",
     "aneti",
+    "linkedin",
 }
 
 
@@ -277,7 +278,8 @@ Start-Process $Chrome -ArgumentList @(
         raise typer.Exit(2)
 
     # One unified cycle. Tiers are just implementation difficulty.
-    sources = ["keejob", "welcometothejungle", "weworkremotely", "remoteok", "remotive", "tanitjobs", "aneti"]
+    # Tier-1 sources are server-side; Tier-2 are CDP-based (Windows Chrome).
+    sources = ["keejob", "welcometothejungle", "weworkremotely", "remoteok", "remotive", "tanitjobs", "aneti", "linkedin"]
 
     cdp = cfg.cdp_url
 
@@ -436,6 +438,25 @@ def smoke() -> None:
             bad += 1
 
     raise typer.Exit(1 if bad else 0)
+
+
+@app.command(name="linkedin-first-page")
+def linkedin_first_page(
+    url: str = typer.Argument(..., help="LinkedIn jobs search URL (scrapes first page only)."),
+    out_json: Path = typer.Option(Path("data/linkedin_first_page.json"), help="Output JSON path."),
+    timeout_ms: int = typer.Option(30_000, help="Timeout in milliseconds."),
+) -> None:
+    """Scrape the first page of a LinkedIn jobs search via the existing CDP Chrome session."""
+    from .config import load_config
+    from .linkedin_first_page_cdp import LinkedInFirstPageConfig, scrape_first_page_via_cdp
+
+    cfg = load_config()
+    payload = scrape_first_page_via_cdp(
+        cfg,
+        LinkedInFirstPageConfig(url=url, timeout_ms=timeout_ms, out_json=out_json),
+    )
+
+    console.print(f"OK linkedin-first-page: count={payload.get('count', 0)} out={out_json}")
 
 
 @app.command()
