@@ -50,7 +50,6 @@ SUSPICIOUS_ZERO_SCRAPE = {
     # If they return 0, it's often a parsing/layout change, blocking, or network issue.
     "keejob",
     "welcometothejungle",
-    "weworkremotely",
     "remoteok",
     "tanitjobs",
     "aneti",
@@ -361,7 +360,7 @@ Start-Process $Chrome -ArgumentList @(
 
     # One unified cycle. Tiers are just implementation difficulty.
     # Tier-1 sources are server-side; Tier-2 are CDP-based (Windows Chrome).
-    sources = ["keejob", "welcometothejungle", "weworkremotely", "remoteok", "remotive", "tanitjobs", "aneti"]
+    sources = ["keejob", "welcometothejungle", "remoteok", "tanitjobs", "aneti"]
 
     cdp = cfg.cdp_url
 
@@ -878,6 +877,28 @@ def score_today(
         )
 
 
+@app.command(name="score_today")
+def score_today_alias(
+    sheet_id: str = typer.Option("", help="Google Sheet ID (or set SHEET_ID in data/config.env)."),
+    sheet_tab: str = typer.Option("", help="Sheet tab to update (default Jobs_Today)."),
+    since_hours: int = typer.Option(24, help="Lookback window in hours."),
+    max_jobs: int = typer.Option(50, help="Maximum jobs to score in one run."),
+    concurrency: int = typer.Option(2, help="Scoring concurrency."),
+    model: str = typer.Option("", help="Ollama model (default qwen2.5:7b-instruct)."),
+    update_sheet: bool = typer.Option(True, "--update-sheet/--no-update-sheet", help="Update Jobs_Today with score columns (J:L)."),
+) -> None:
+    """Alias for score-today (underscore variant)."""
+    return score_today(
+        sheet_id=sheet_id,
+        sheet_tab=sheet_tab,
+        since_hours=since_hours,
+        max_jobs=max_jobs,
+        concurrency=concurrency,
+        model=model,
+        update_sheet=update_sheet,
+    )
+
+
 @app.command(name="extract-text")
 def extract_text(
     sheet_id: str = typer.Option("", help="Google Sheet ID (or set SHEET_ID in data/config.env)."),
@@ -956,6 +977,26 @@ def score_cached(
     )
 
 
+@app.command(name="score_cached")
+def score_cached_alias(
+    sheet_id: str = typer.Option("", help="Google Sheet ID (or set SHEET_ID in data/config.env)."),
+    sheet_tab: str = typer.Option("", help="Sheet tab to update (default Jobs_Today)."),
+    max_jobs: int = typer.Option(50, help="Maximum jobs to score in one run."),
+    concurrency: int = typer.Option(2, help="Scoring concurrency."),
+    model: str = typer.Option("", help="Ollama model (default qwen2.5:7b-instruct)."),
+    extract_missing: bool = typer.Option(False, help="Attempt text extraction for missing cache entries."),
+) -> None:
+    """Alias for score-cached (underscore variant)."""
+    return score_cached(
+        sheet_id=sheet_id,
+        sheet_tab=sheet_tab,
+        max_jobs=max_jobs,
+        concurrency=concurrency,
+        model=model,
+        extract_missing=extract_missing,
+    )
+
+
 @app.command(name="score-unscored")
 def score_unscored(
     sheet_id: str = typer.Option("", help="Google Sheet ID (or set SHEET_ID in data/config.env)."),
@@ -999,7 +1040,7 @@ def score_unscored(
 @app.command()
 def run_all(sheet_id: str = typer.Argument(...), notify: bool = True) -> None:
     """Run Tier-1 sources once."""
-    tier1 = ["keejob", "welcometothejungle", "weworkremotely", "remoteok", "remotive"]
+    tier1 = ["keejob", "welcometothejungle", "remoteok"]
     for s in tier1:
         cmd = [sys.executable, "-m", "jobscraper.run", "--source", s, "--once", "--sheet-id", sheet_id]
         if notify:
