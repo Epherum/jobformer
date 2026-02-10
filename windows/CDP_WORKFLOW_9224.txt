@@ -1,0 +1,26 @@
+JobScraper CDP (WSL -> Windows) workflow (9224)
+
+Symptoms
+- From WSL: ./run.sh smoke fails CDP_URL http://172.25.192.1:9223
+- curl to 172.25.192.1:9223 times out / connection reset
+
+What worked
+1) Run Chrome with remote debugging (on Windows): --remote-debugging-port=9224
+2) Chrome may bind to 127.0.0.1:9224 only.
+3) Expose it to WSL by creating a portproxy:
+   172.25.192.1:9224  ->  127.0.0.1:9224
+4) Allow inbound TCP 9224 in Windows Firewall.
+5) Set JobScraper CDP_URL to http://172.25.192.1:9224 and re-run smoke.
+
+Commands (Windows, Admin)
+- netsh interface portproxy add v4tov4 listenaddress=172.25.192.1 listenport=9224 connectaddress=127.0.0.1 connectport=9224
+- New-NetFirewallRule -DisplayName "JobScraper CDP 9224 (WSL)" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 9224
+
+Test
+- From WSL:
+  curl -s http://172.25.192.1:9224/json/version
+
+Notes
+- If you change port, update BOTH the Chrome launch port and the portproxy rule.
+- If portproxy already exists and behaves weirdly, delete and re-add it:
+  netsh interface portproxy delete v4tov4 listenaddress=172.25.192.1 listenport=9224
