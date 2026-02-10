@@ -866,25 +866,6 @@ def smoke() -> None:
     raise typer.Exit(1 if bad else 0)
 
 
-@app.command(name="linkedin-first-page")
-def linkedin_first_page(
-    url: str = typer.Argument(..., help="LinkedIn jobs search URL (scrapes first page only)."),
-    out_json: Path = typer.Option(Path("data/linkedin_first_page.json"), help="Output JSON path."),
-    timeout_ms: int = typer.Option(30_000, help="Timeout in milliseconds."),
-) -> None:
-    """Scrape the first page of a LinkedIn jobs search via the existing CDP Chrome session."""
-    from .config import load_config
-    from .linkedin_first_page_cdp import LinkedInFirstPageConfig, scrape_first_page_via_cdp
-
-    cfg = load_config()
-    payload = scrape_first_page_via_cdp(
-        cfg,
-        LinkedInFirstPageConfig(url=url, timeout_ms=timeout_ms, out_json=out_json),
-    )
-
-    console.print(f"OK linkedin-first-page: count={payload.get('count', 0)} out={out_json}")
-
-
 @app.command()
 def transfer_today(
     sheet_id: str = typer.Argument("", help="Google Sheet ID (or set SHEET_ID in data/config.env)."),
@@ -971,28 +952,6 @@ def score_today(
         )
 
 
-@app.command(name="score_today")
-def score_today_alias(
-    sheet_id: str = typer.Option("", help="Google Sheet ID (or set SHEET_ID in data/config.env)."),
-    sheet_tab: str = typer.Option("", help="Sheet tab to update (default Jobs_Today)."),
-    since_hours: int = typer.Option(24, help="Lookback window in hours."),
-    max_jobs: int = typer.Option(50, help="Maximum jobs to score in one run."),
-    concurrency: int = typer.Option(2, help="Scoring concurrency."),
-    model: str = typer.Option("", help="Ollama model (default qwen2.5:7b-instruct)."),
-    update_sheet: bool = typer.Option(True, "--update-sheet/--no-update-sheet", help="Update Jobs_Today with score columns (I:J)."),
-) -> None:
-    """Alias for score-today (underscore variant)."""
-    return score_today(
-        sheet_id=sheet_id,
-        sheet_tab=sheet_tab,
-        since_hours=since_hours,
-        max_jobs=max_jobs,
-        concurrency=concurrency,
-        model=model,
-        update_sheet=update_sheet,
-    )
-
-
 @app.command(name="extract-text")
 def extract_text(
     sheet_id: str = typer.Option("", help="Google Sheet ID (or set SHEET_ID in data/config.env)."),
@@ -1071,26 +1030,6 @@ def score_cached(
     )
 
 
-@app.command(name="score_cached")
-def score_cached_alias(
-    sheet_id: str = typer.Option("", help="Google Sheet ID (or set SHEET_ID in data/config.env)."),
-    sheet_tab: str = typer.Option("", help="Sheet tab to update (default Jobs_Today)."),
-    max_jobs: int = typer.Option(50, help="Maximum jobs to score in one run."),
-    concurrency: int = typer.Option(2, help="Scoring concurrency."),
-    model: str = typer.Option("", help="Ollama model (default qwen2.5:7b-instruct)."),
-    extract_missing: bool = typer.Option(False, help="Attempt text extraction for missing cache entries."),
-) -> None:
-    """Alias for score-cached (underscore variant)."""
-    return score_cached(
-        sheet_id=sheet_id,
-        sheet_tab=sheet_tab,
-        max_jobs=max_jobs,
-        concurrency=concurrency,
-        model=model,
-        extract_missing=extract_missing,
-    )
-
-
 @app.command(name="score-unscored")
 def score_unscored(
     sheet_id: str = typer.Option("", help="Google Sheet ID (or set SHEET_ID in data/config.env)."),
@@ -1165,6 +1104,9 @@ def score_open_tabs(
     max_tabs: int = typer.Option(25, help="How many open tabs to consider (most recent first)."),
     model: str = typer.Option("", help="Ollama model (default qwen2.5:7b-instruct)."),
     dry_run: bool = typer.Option(False, help="Do not update the sheet, just print what would be updated."),
+    open_unscored: bool = typer.Option(False, help="Open unscored sheet URLs in the CDP browser first (best-effort)."),
+    sites: str = typer.Option("", help="Comma-separated host filters (e.g. tanitjobs.com,linkedin.com)."),
+    max_open: int = typer.Option(20, help="Max tabs to open when --open-unscored is set."),
 ) -> None:
     """Manual workflow helper.
 
@@ -1180,7 +1122,7 @@ def score_open_tabs(
     import os
 
     from .config import load_config
-    from .cdp_open_tabs import extract_text_from_open_tabs
+    from .cdp_open_tabs import extract_text_from_open_tabs, open_urls_in_cdp
     from .job_text_cache_db import JobTextCacheDB
     from .llm_score import DEFAULT_MODEL, score_job_with_ollama
     from .sheets_sync import SheetsConfig, _get_sheet_rows, update_job_scores
@@ -1208,6 +1150,9 @@ def score_open_tabs(
     canon_to_meta: dict[str, tuple[str, str, str]] = {}
     canon_to_sheet_url: dict[str, str] = {}
 
+    # Optional host filters
+    site_filters = [s.strip().lower() for s in (sites or "").split(",") if s.strip()]
+
     for r in (rows or [])[1:]:
         if len(r) < 7:
             continue
@@ -1215,6 +1160,18 @@ def score_open_tabs(
         score = (r[8] or "").strip() if len(r) > 8 else ""
         if not url or score:
             continue
+
+        host = ""
+        try:
+            from urllib.parse import urlparse
+
+            host = (urlparse(url).netloc or "").lower()
+        except Exception:
+            host = ""
+
+        if site_filters and not any(sf in host for sf in site_filters):
+            continue
+
         title = (r[2] or "").strip() if len(r) > 2 else ""
         company = (r[3] or "").strip() if len(r) > 3 else ""
         location = (r[4] or "").strip() if len(r) > 4 else ""
@@ -1224,8 +1181,13 @@ def score_open_tabs(
         canon_to_sheet_url[cu] = url
 
     if not canon_to_meta:
-        console.print("No unscored rows found in sheet.")
+        console.print("No unscored rows found in sheet (after filters).")
         raise typer.Exit(0)
+
+    if open_unscored:
+        urls_to_open = list(canon_to_sheet_url.values())
+        opened = open_urls_in_cdp(cdp_url=cdp_url, urls=urls_to_open, max_open=max_open)
+        console.print(f"opened_tabs={opened} (now solve any challenges in the browser if needed, then rerun score-open-tabs)")
 
     open_tabs = extract_text_from_open_tabs(cdp_url=cdp_url, max_tabs=max_tabs)
     if not open_tabs:
@@ -1293,19 +1255,6 @@ def score_open_tabs(
 
     n = update_job_scores(sheet_cfg, updates)
     console.print(f"updated_rows={n} scored={len(updates)}")
-
-
-@app.command()
-def run_all(sheet_id: str = typer.Argument(...), notify: bool = True) -> None:
-    """Run Tier-1 sources once."""
-    tier1 = ["keejob", "welcometothejungle", "remoteok"]
-    for s in tier1:
-        cmd = [sys.executable, "-m", "jobscraper.run", "--source", s, "--once", "--sheet-id", sheet_id]
-        if notify:
-            cmd.append("--notify")
-        code, out = _run(cmd)
-        console.print(f"{s}: exit={code}")
-        console.print(_parse_summary(Task(s, 'run', 0, []), out, exit_code=code))
 
 
 if __name__ == "__main__":

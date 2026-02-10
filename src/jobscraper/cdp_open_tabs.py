@@ -104,7 +104,6 @@ def extract_text_from_open_tabs(
             for page in reversed(pages):
                 if len(out) >= max_tabs:
                     break
-                url = ""
                 try:
                     url = page.url or ""
                 except Exception:
@@ -134,7 +133,8 @@ def extract_text_from_open_tabs(
                             body_txt = (page.inner_text("body") or "")
                         except Exception:
                             body_txt = ""
-                        if body_txt and ("verifying you are human" not in body_txt.lower()) and ("just a moment" not in body_txt.lower()):
+                        b = body_txt.lower()
+                        if body_txt and ("verifying you are human" not in b) and ("just a moment" not in b):
                             break
                         page.wait_for_timeout(800)
 
@@ -169,3 +169,65 @@ def extract_text_from_open_tabs(
             except Exception:
                 pass
             return []
+
+
+def open_urls_in_cdp(
+    *,
+    cdp_url: Optional[str],
+    urls: list[str],
+    max_open: int = 20,
+    timeout_ms: int = 30_000,
+    keep_existing: bool = True,
+) -> int:
+    """Open a list of URLs in the existing CDP Chrome session.
+
+    This navigates by opening new tabs (pages) in the first browser context.
+    It does not close any existing tabs by default.
+
+    Returns the number of tabs opened.
+    """
+
+    if not cdp_url:
+        return 0
+
+    urls = [u for u in (urls or []) if _valid_http_url(u)]
+    if max_open and len(urls) > max_open:
+        urls = urls[:max_open]
+
+    if not urls:
+        return 0
+
+    with _CDP_SEM:
+        try:
+            browser = get_cdp_browser(cdp_url, timeout_ms=max(timeout_ms, 45_000), retries=3, backoff_s=0.8)
+            if browser is None:
+                return 0
+
+            ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+
+            opened = 0
+            for u in urls:
+                page = ctx.new_page()
+                page.set_default_timeout(timeout_ms)
+                try:
+                    try:
+                        page.set_extra_http_headers({"User-Agent": DEFAULT_UA})
+                    except Exception:
+                        pass
+                    try:
+                        page.goto(u, wait_until="domcontentloaded")
+                    except Exception:
+                        pass
+                    opened += 1
+                except Exception:
+                    try:
+                        page.close()
+                    except Exception:
+                        pass
+            return opened
+        except Exception:
+            try:
+                invalidate_cdp_browser()
+            except Exception:
+                pass
+            return 0
