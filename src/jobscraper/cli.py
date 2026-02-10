@@ -45,6 +45,12 @@ class Task:
 STAT_RE = re.compile(r"^(?P<source>\w+):\s+scraped=(?P<scraped>\d+)\s+new=(?P<new>\d+)\s+relevant_new=(?P<relevant>\d+)", re.M)
 WATCH_RE = re.compile(r"NEW relevant=(?P<count>\d+)")
 
+# UI parsing helpers (compact summaries)
+STAT_SUMMARY_RE = re.compile(r"scraped=(?P<scraped>\d+)\s+new=(?P<new>\d+)\s+relevant_new=(?P<relevant>\d+)")
+EXTRACT_SUMMARY_RE = re.compile(r"candidates=(?P<cand>\d+)\s+ok=(?P<ok>\d+)\s+blocked=(?P<blocked>\d+)")
+SCORE_SUMMARY_RE = re.compile(r"passes<=\d+\s+scored=(?P<scored>\d+)\s+updated=(?P<updated>\d+)\s+errors=(?P<errors>\d+)")
+SCORE_PASS_RE = re.compile(r"pass=\d+/\d+\s+scored=(?P<scored>\d+)\s+updated=(?P<updated>\d+)\s+missing=(?P<missing>\d+)")
+
 
 SUSPICIOUS_ZERO_SCRAPE = {
     # These sources almost always return >0 scraped when healthy.
@@ -190,6 +196,69 @@ def _fmt_secs(s: int) -> str:
     return f"{s}s"
 
 
+def _color_num(n: int, *, good_when_zero: bool = False) -> Text:
+    if good_when_zero and n == 0:
+        return Text(str(n), style="green")
+    if n == 0:
+        return Text(str(n), style="dim")
+    return Text(str(n), style="bold")
+
+
+def _format_recent_summary(summary: str) -> Text:
+    """Turn verbose summaries into compact, readable, color-coded text."""
+
+    s = (summary or "").strip()
+
+    m = STAT_SUMMARY_RE.search(s)
+    if m:
+        scraped = int(m.group("scraped"))
+        new = int(m.group("new"))
+        rel = int(m.group("relevant"))
+        out = Text()
+        out.append_text(_color_num(scraped))
+        out.append(" ")
+        out.append_text(_color_num(new))
+        out.append(" ")
+        out.append_text(_color_num(rel))
+        return out
+
+    m = EXTRACT_SUMMARY_RE.search(s)
+    if m:
+        cand = int(m.group("cand"))
+        ok = int(m.group("ok"))
+        blocked = int(m.group("blocked"))
+        out = Text()
+        out.append_text(_color_num(ok))
+        out.append("/")
+        out.append_text(_color_num(cand))
+        out.append("  ")
+        out.append("blk=")
+        out.append_text(_color_num(blocked, good_when_zero=True))
+        return out
+
+    m = SCORE_PASS_RE.search(s) or SCORE_SUMMARY_RE.search(s)
+    if m:
+        # For pass lines: scored/updated/missing. For final: scored/updated/errors.
+        out = Text()
+        scored = int(m.group("scored"))
+        updated = int(m.group("updated"))
+        out.append("sc=")
+        out.append_text(_color_num(scored))
+        out.append(" up=")
+        out.append_text(_color_num(updated))
+        if "missing" in m.groupdict():
+            missing = int(m.group("missing"))
+            out.append(" miss=")
+            out.append_text(_color_num(missing, good_when_zero=True))
+        elif "errors" in m.groupdict():
+            errors = int(m.group("errors"))
+            out.append(" err=")
+            out.append_text(_color_num(errors, good_when_zero=True))
+        return out
+
+    return Text(_shorten(s, 80))
+
+
 def _init_dashboard_layout(progress: Progress) -> Layout:
     """Create a stable Rich layout.
 
@@ -218,10 +287,17 @@ def _init_dashboard_layout(progress: Progress) -> Layout:
     # Keep ASCII stable and avoid wrapping, which makes it look "messed up".
     decal = Text(ascii_logo, justify="center", no_wrap=True, overflow="crop", style="bold")
 
+    legend = Text(justify="center")
+    legend.append("Legend: ", style="dim")
+    legend.append("scraped/new/relevant", style="dim")
+    legend.append("  •  ", style="dim")
+    legend.append("ok/total blk=0", style="dim")
+
     left_group = Group(
         progress,
         Text(""),
         Panel(decal, border_style="dim", padding=(0, 2)),
+        Panel(legend, border_style="dim", padding=(0, 1)),
     )
 
     layout["left"].update(Panel(left_group, title="Progress", padding=(1, 1)))
@@ -265,28 +341,29 @@ def _refresh_dashboard_layout(layout: Layout, tasks: List[Task], now_ts: float, 
             code_cell = Text(code_txt, style="dim")
         else:
             code_cell = Text(code_txt, style="red")
-        recent.add_row(name, code_cell, _shorten(summary, 80))
+        recent.add_row(name, code_cell, _format_recent_summary(summary))
     layout["right"].update(Panel(recent, title="Recent results", padding=(0, 1)))
 
     footer = Text()
-    footer.append("Next run in: ")
-    # Only real scheduled tasks should affect the next-run timer.
-    # Dashboard rows like extract/score/notify are not scheduled.
-    sched = [t for t in tasks if (t.kind in {"run", "watch"}) and t.interval_s > 0]
-    next_run = min((_task_next_run(t, now_ts) for t in sched), default=now_ts)
-    remaining = max(0, int(next_run - now_ts))
-    footer.append(_fmt_secs(remaining), style="bold")
+    footer.append("Phase: ", style="dim")
+    footer.append(state.phase, style="bold")
 
     footer.append("  •  ")
-    footer.append(f"New: {state.new_relevant}")
+    footer.append("New: ", style="dim")
+    footer.append(str(state.new_relevant))
+
     footer.append("  •  ")
-    footer.append(f"Issues: {state.issues}")
+    footer.append("Issues: ", style="dim")
+    footer.append(str(state.issues))
+
     footer.append("  •  ")
-    footer.append(f"Cache ok/blocked: {state.cache_ok}/{state.cache_blocked}")
+    footer.append("Cache ok/blocked: ", style="dim")
+    footer.append(f"{state.cache_ok}/{state.cache_blocked}")
 
     if state.unscored_remaining is not None:
         footer.append("  •  ")
-        footer.append(f"Unscored: {state.unscored_remaining}")
+        footer.append("Unscored: ", style="dim")
+        footer.append(str(state.unscored_remaining))
 
     footer.append("  •  ")
     footer.append(f"Tasks: {len(tasks)}", style="dim")
