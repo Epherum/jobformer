@@ -204,17 +204,17 @@ def _init_dashboard_layout(progress: Progress) -> Layout:
 
     # Small static ASCII decal, kept stable to avoid any layout reflow/flicker.
     # Keep it static (no animation) and fixed-height to avoid reflow.
-    decal = Text(
-        "\n"
+    ascii_logo = (
         "   _       _      _____                             \n"
         "  (_) ___ | |__  |  ___|__  _ __ _ __ ___   ___ _ __\n"
         "  | |/ _ \\| '_ \\ | |_ / _ \\| '__| '_ ` _ \\ / _ \\ '__|\n"
         "  | | (_) | |_) ||  _| (_) | |  | | | | | |  __/ |   \n"
         " _/ |\\___/|_.__/ |_|  \\___/|_|  |_| |_| |_|\\___|_|   \n"
-        "|__/\n",
-        justify="center",
-        style="bold",
+        "|__/\n"
     )
+
+    # Keep ASCII stable and avoid wrapping, which makes it look "messed up".
+    decal = Text(ascii_logo, justify="center", no_wrap=True, overflow="crop", style="bold")
 
     left_group = Group(
         progress,
@@ -268,7 +268,10 @@ def _refresh_dashboard_layout(layout: Layout, tasks: List[Task], now_ts: float, 
 
     footer = Text()
     footer.append("Next run in: ")
-    next_run = min((_task_next_run(t, now_ts) for t in tasks), default=now_ts)
+    # Only real scheduled tasks should affect the next-run timer.
+    # Dashboard rows like extract/score/notify are not scheduled.
+    sched = [t for t in tasks if (t.kind in {"run", "watch"}) and t.interval_s > 0]
+    next_run = min((_task_next_run(t, now_ts) for t in sched), default=now_ts)
     remaining = max(0, int(next_run - now_ts))
     footer.append(_fmt_secs(remaining), style="bold")
 
