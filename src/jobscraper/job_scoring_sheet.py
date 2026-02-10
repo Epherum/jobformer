@@ -35,7 +35,7 @@ def score_unscored_sheet_rows(
         if len(r) < 7:
             continue
         url = r[6].strip()
-        llm_score = r[9].strip() if len(r) > 9 and r[9] is not None else ""
+        llm_score = r[8].strip() if len(r) > 8 and r[8] is not None else ""
         if not url or llm_score:
             continue
 

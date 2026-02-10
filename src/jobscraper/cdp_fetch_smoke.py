@@ -16,7 +16,7 @@ def pick_one_unscored_per_domain(cfg: SheetsConfig, limit_domains: int = 10) -> 
     for r in rows[1:]:
         title = (r[2] or '').strip() if len(r) > 2 else ''
         url = (r[6] or '').strip() if len(r) > 6 else ''
-        score = (r[9] or '').strip() if len(r) > 9 else ''
+        score = (r[8] or '').strip() if len(r) > 8 else ''
         # If the row is shorter than the LLM columns, treat it as unscored.
         if not url or score:
             continue

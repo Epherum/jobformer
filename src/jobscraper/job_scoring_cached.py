@@ -58,6 +58,7 @@ def score_unscored_sheet_rows_from_cache(
     max_jobs: int = 25,
     concurrency: int = 2,
     extract_missing: bool = False,
+    progress_cb: Optional[callable] = None,
 ) -> dict:
     rows = _get_sheet_rows(sheet_cfg)
     if not rows or len(rows) < 2:
@@ -69,7 +70,7 @@ def score_unscored_sheet_rows_from_cache(
         if len(r) < 7:
             continue
         url = (r[6] or "").strip()
-        llm_score = r[9].strip() if len(r) > 9 and r[9] is not None else ""
+        llm_score = r[8].strip() if len(r) > 8 and r[8] is not None else ""
         if not url or llm_score:
             continue
 
@@ -86,7 +87,11 @@ def score_unscored_sheet_rows_from_cache(
     cache_db = JobTextCacheDB(db_path)
     cached = cache_db.get_many(url_canons)
 
-    missing_urls = [u for u in urls if (not cached.get(canonicalize_url(u)) or cached.get(canonicalize_url(u), {}).get("status") != "ok")]
+    missing_urls = [
+        u
+        for u in urls
+        if (not cached.get(canonicalize_url(u)) or cached.get(canonicalize_url(u), {}).get("status") != "ok")
+    ]
 
     if extract_missing and missing_urls:
         extract_text_for_urls(urls=missing_urls, db_path=str(db_path))
@@ -95,6 +100,23 @@ def score_unscored_sheet_rows_from_cache(
     results: list[ScoreResult] = []
     errors = 0
     missing = 0
+    processed = 0
+
+    def _tick(kind: str, url: str) -> None:
+        nonlocal processed
+        processed += 1
+        if progress_cb is not None:
+            try:
+                progress_cb(
+                    {
+                        "kind": kind,  # scored|missing|error
+                        "url": url,
+                        "processed": processed,
+                        "total": len(candidates),
+                    }
+                )
+            except Exception:
+                pass
 
     def _text_for_url(u: str) -> str:
         row = cached.get(canonicalize_url(u))
@@ -110,6 +132,7 @@ def score_unscored_sheet_rows_from_cache(
             text = _text_for_url(c.url)
             if not text:
                 missing += 1
+                _tick("missing", c.url)
                 continue
             futs[pool.submit(_score_from_text, c, text, model)] = c
 
@@ -118,10 +141,13 @@ def score_unscored_sheet_rows_from_cache(
             try:
                 res = fut.result()
                 if res is None:
+                    _tick("missing", c.url)
                     continue
                 results.append(res)
+                _tick("scored", c.url)
             except Exception as e:
                 errors += 1
+                _tick("error", c.url)
                 # Best-effort: print which URL failed so debugging is possible.
                 print(f"score_error url={c.url} title={c.title[:60]} err={type(e).__name__}: {e}")
 

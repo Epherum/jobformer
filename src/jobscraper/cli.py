@@ -188,7 +188,11 @@ def _fmt_secs(s: int) -> str:
     return f"{s}s"
 
 
-def _build_dashboard(tasks: List[Task], now_ts: float, state: DashboardState) -> Layout:
+def _init_dashboard_layout(progress: Progress) -> Layout:
+    """Create a stable Rich layout.
+
+    Important for flicker reduction: keep the Progress instance stable across updates.
+    """
     layout = Layout()
     layout.split_column(
         Layout(name="header", size=5),
@@ -196,6 +200,16 @@ def _build_dashboard(tasks: List[Task], now_ts: float, state: DashboardState) ->
         Layout(name="footer", size=3),
     )
     layout["body"].split_row(Layout(name="left"), Layout(name="right"))
+
+    layout["left"].update(Panel(progress, title="Progress", padding=(1, 1)))
+    layout["right"].update(Panel(Text(""), title="Recent results", padding=(0, 1)))
+    layout["header"].update(Panel(Text(""), title="JobScraper", padding=(0, 1)))
+    layout["footer"].update(Panel(Text(""), padding=(0, 1)))
+    return layout
+
+
+def _refresh_dashboard_layout(layout: Layout, tasks: List[Task], now_ts: float, state: DashboardState) -> None:
+    """Update header/right/footer panels. Progress is updated separately."""
 
     header = Table.grid(expand=True)
     header.add_column(ratio=2)
@@ -214,28 +228,7 @@ def _build_dashboard(tasks: List[Task], now_ts: float, state: DashboardState) ->
         f"[bold]Time:[/bold] {_now().astimezone().strftime('%H:%M:%S')}",
         "",
     )
-
     layout["header"].update(Panel(header, title="JobScraper", padding=(0, 1)))
-
-    progress = Progress(
-        TextColumn("[bold]{task.description}[/bold]"),
-        BarColumn(bar_width=None),
-        TextColumn("{task.completed}/{task.total}"),
-        expand=True,
-    )
-    progress.add_task("Sources", completed=state.sources_done, total=max(state.sources_total, 1))
-    progress.add_task(
-        "Extract text",
-        completed=state.extract_processed,
-        total=state.extract_total if state.extract_total > 0 else 1,
-    )
-    progress.add_task(
-        "Score cache",
-        completed=state.score_scored,
-        total=state.score_target if state.score_target > 0 else 1,
-    )
-
-    layout["left"].update(Panel(progress, title="Progress", padding=(1, 1)))
 
     recent = Table(expand=True, show_header=True)
     recent.add_column("Task", no_wrap=True)
@@ -243,7 +236,6 @@ def _build_dashboard(tasks: List[Task], now_ts: float, state: DashboardState) ->
     recent.add_column("Summary")
     for name, exit_code, summary in (state.last_results or [])[-8:]:
         recent.add_row(name, exit_code, _shorten(summary, 80))
-
     layout["right"].update(Panel(recent, title="Recent results", padding=(0, 1)))
 
     footer = Text()
@@ -254,8 +246,6 @@ def _build_dashboard(tasks: List[Task], now_ts: float, state: DashboardState) ->
     footer.append("  •  ")
     footer.append(f"Total tasks: {len(tasks)}")
     layout["footer"].update(Panel(Align.left(footer), padding=(0, 1)))
-
-    return layout
 
 
 @app.command()
@@ -386,13 +376,7 @@ Start-Process $Chrome -ArgumentList @(
     ]
 
     # Extra transparency rows in the dashboard.
-    all_jobs_task = Task(
-        name="all_jobs_sync",
-        kind="sync",
-        interval_s=interval_min * 60,
-        cmd=[],
-        last_summary="pending",
-    )
+    # all_jobs_sync removed from automatic dashboard pipeline.
     notify_task = Task(
         name="notify",
         kind="notify",
@@ -465,41 +449,69 @@ Start-Process $Chrome -ArgumentList @(
         )
 
     # We'll export SQLite -> CSV and sync it to "All jobs" after each cycle.
-    export_cmd = [sys.executable, "-c", "from jobscraper.export_all_jobs import export_all_jobs_csv; export_all_jobs_csv()"]
+    # NOTE: pushing the full DB to the "All jobs" sheet is now manual (see push-all-jobs).
 
     disable_score = (os.getenv("DISABLE_LLM_SCORE") or "").strip().lower() in {"1", "true", "yes", "y"}
 
-    dashboard_rows = tasks + [extract_task, score_task, all_jobs_task, notify_task]
+    dashboard_rows = tasks + [extract_task, score_task, notify_task]
     state = DashboardState(sources_total=len(tasks))
     is_tty = console.is_terminal and sys.stdout.isatty()
 
     def _add_result(name: str, exit_code: Optional[int], summary: str) -> None:
         state.last_results.append((name, "" if exit_code is None else str(exit_code), summary))
 
+    # Stable Progress instance (reduces flicker vs recreating Progress every update)
+    progress = Progress(
+        TextColumn("[bold]{task.description}[/bold]"),
+        BarColumn(bar_width=None),
+        TextColumn("{task.completed}/{task.total}"),
+        expand=True,
+    )
+    sources_task_id = progress.add_task("Sources", completed=0, total=max(state.sources_total, 1))
+    extract_task_id = progress.add_task("Extract text", completed=0, total=1)
+    score_task_id = progress.add_task("Score cache", completed=0, total=1)
+
+    layout = _init_dashboard_layout(progress)
+
+    def _sync_progress_from_state() -> None:
+        progress.update(sources_task_id, completed=state.sources_done, total=max(state.sources_total, 1))
+        progress.update(
+            extract_task_id,
+            completed=state.extract_processed,
+            total=state.extract_total if state.extract_total > 0 else 1,
+        )
+        progress.update(
+            score_task_id,
+            completed=state.score_scored,
+            total=state.score_target if state.score_target > 0 else 1,
+        )
+
     last_ui_update_ts: float = 0.0
 
     def _update_live(live: Optional[Live] = None, *, force: bool = False) -> None:
         """Update the Rich Live UI.
 
-        Debounced to reduce terminal flicker. Set force=True for major phase transitions.
+        Key flicker fix: keep the same Layout + Progress instances. Only update panel contents.
         """
         nonlocal last_ui_update_ts
         if not is_tty or live is None:
             return
         now = time.time()
-        if not force and (now - last_ui_update_ts) < 0.4:
+        if not force and (now - last_ui_update_ts) < 0.6:
             return
         last_ui_update_ts = now
-        live.update(_build_dashboard(dashboard_rows, now, state))
+        _sync_progress_from_state()
+        _refresh_dashboard_layout(layout, dashboard_rows, now, state)
+        # Avoid swapping the root renderable; just refresh.
+        live.refresh()
 
     def _plain_print(line: str) -> None:
         if is_tty:
             return
         console.print(line)
 
-    # NOTE: Rich Live can flicker if we push updates too frequently (especially in some terminals).
-    # Keep refresh rate modest and debounce manual update calls.
-    live_ctx = Live(_build_dashboard(dashboard_rows, time.time(), state), refresh_per_second=2, console=console) if is_tty else None
+    # Using screen=True tends to reduce flicker in many terminals.
+    live_ctx = Live(layout, refresh_per_second=4, console=console, screen=True, transient=False) if is_tty else None
 
     # Loop
     if live_ctx:
@@ -522,7 +534,7 @@ Start-Process $Chrome -ArgumentList @(
             state.score_target = 0
 
             state.phase = "scraping sources"
-            _update_live(live_ctx)
+            _update_live(live_ctx, force=True)
 
             for t in tasks:
                 start = time.time()
@@ -586,19 +598,49 @@ Start-Process $Chrome -ArgumentList @(
             extract_task.last_summary = "extracting text"
             _update_live(live_ctx)
             try:
-                from jobscraper.sheets_sync import SheetsConfig
-                from jobscraper.text_extraction import extract_text_for_sheet
+                from jobscraper.sheets_sync import SheetsConfig, _get_sheet_rows
+                from jobscraper.text_extraction import extract_text_for_urls
 
-                summary = extract_text_for_sheet(
-                    sheet_cfg=SheetsConfig(sheet_id=sheet_id, tab=jobs_today_tab, account=cfg.sheet_account),
+                sheet_cfg = SheetsConfig(sheet_id=sheet_id, tab=jobs_today_tab, account=cfg.sheet_account)
+                rows = _get_sheet_rows(sheet_cfg)
+
+                # Collect URLs from Jobs_Today that still need scoring.
+                urls: list[str] = []
+                for r in reversed((rows or [])[1:]):
+                    if len(r) < 7:
+                        continue
+                    url = (r[6] or "").strip()
+                    score = (r[8] or "").strip() if len(r) > 8 else ""
+                    if url and not score:
+                        urls.append(url)
+
+                max_fetch = int((os.getenv("TEXT_FETCH_MAX_JOBS") or "50").strip() or "50")
+                state.extract_total = min(len(urls), max_fetch) if max_fetch else len(urls)
+                state.extract_processed = 0
+                state.cache_ok = 0
+                state.cache_blocked = 0
+                _update_live(live_ctx, force=True)
+
+                def _on_extract(res, stats) -> None:
+                    # stats contains running totals
+                    state.extract_total = int(stats.get("candidates", 0) or 0) or state.extract_total
+                    state.extract_processed = int(stats.get("fetched", 0) or 0)
+                    state.cache_ok = int(stats.get("ok", 0) or 0)
+                    state.cache_blocked = int(stats.get("blocked", 0) or 0)
+                    _update_live(live_ctx)
+
+                summary = extract_text_for_urls(
+                    urls=urls,
                     db_path=str(Path("data") / "jobs.sqlite3"),
-                    max_jobs=None,
+                    max_jobs=max_fetch,
                     refresh=False,
+                    progress_cb=_on_extract,
                 )
+
                 extract_task.last_exit = 0
                 extract_task.last_summary = f"candidates={summary['candidates']} ok={summary['ok']} blocked={summary['blocked']}"
                 state.extract_total = int(summary.get("candidates", 0) or 0)
-                state.extract_processed = int(summary.get("ok", 0) or 0) + int(summary.get("blocked", 0) or 0) + int(summary.get("empty", 0) or 0) + int(summary.get("errors", 0) or 0)
+                state.extract_processed = int(summary.get("fetched", 0) or 0)
                 state.cache_ok = int(summary.get("ok", 0) or 0)
                 state.cache_blocked = int(summary.get("blocked", 0) or 0)
             except Exception as e:
@@ -635,6 +677,16 @@ Start-Process $Chrome -ArgumentList @(
                         state.phase = f"scoring cached (pass {p}/3)"
                         _update_live(live_ctx)
 
+                        state.score_scored = 0
+                        state.score_target = max_jobs
+                        _update_live(live_ctx, force=True)
+
+                        def _on_score(ev: dict) -> None:
+                            # ev: {kind, url, processed, total}
+                            state.score_scored = int(ev.get("processed", 0) or 0)
+                            state.score_target = int(ev.get("total", 0) or 0) or max_jobs
+                            _update_live(live_ctx)
+
                         summary = score_unscored_sheet_rows_from_cache(
                             db_path=Path("data") / "jobs.sqlite3",
                             model=model,
@@ -642,6 +694,7 @@ Start-Process $Chrome -ArgumentList @(
                             max_jobs=max_jobs,
                             concurrency=2,
                             extract_missing=False,
+                            progress_cb=_on_score,
                         )
 
                         total_scored += int(summary.get("scored", 0) or 0)
@@ -650,8 +703,9 @@ Start-Process $Chrome -ArgumentList @(
 
                         missing = int(summary.get("missing", 0) or 0)
                         state.unscored_remaining = missing
-                        state.score_scored = int(summary.get("scored", 0) or 0)
-                        state.score_target = max_jobs
+                        # Keep the progress bar as "processed/total" instead of "scored/max".
+                        # Mark the pass as finished.
+                        state.score_scored = state.score_target
 
                         score_task.last_summary = f"pass={p}/3 scored={summary['scored']} updated={summary['updated_rows']} missing={missing}"
                         _update_live(live_ctx)
@@ -673,34 +727,7 @@ Start-Process $Chrome -ArgumentList @(
             _plain_print(f"score_cached: {score_task.last_summary}")
             _update_live(live_ctx)
 
-            # Export all jobs CSV and sync it to All jobs tab.
-            state.phase = "syncing all jobs"
-            all_jobs_task.last_exit = None
-            all_jobs_task.last_summary = "exporting CSV"
-            _update_live(live_ctx)
-            try:
-                _run(export_cmd, timeout_s=120)
-                from jobscraper.export_all_jobs import ExportConfig
-                from jobscraper.sheets_all_jobs import AllJobsSheetConfig, write_all_jobs_csv_to_sheet
-
-                all_jobs_task.last_summary = f"uploading to sheet tab={all_jobs_tab}"
-                _update_live(live_ctx)
-
-                csv_path = ExportConfig().out_csv
-                uploaded = write_all_jobs_csv_to_sheet(
-                    AllJobsSheetConfig(sheet_id=sheet_id, tab=all_jobs_tab),
-                    csv_path,
-                )
-                all_jobs_task.last_exit = 0
-                all_jobs_task.last_summary = f"uploaded rows={uploaded}"
-                _append_log(log_csv, [_now().isoformat(timespec="seconds"), "all_jobs_sync", "sync", "0", "0", f"rows={uploaded}"])
-            except Exception as e:
-                all_jobs_task.last_exit = 1
-                all_jobs_task.last_summary = f"error={e}"[:160]
-                _append_log(log_csv, [_now().isoformat(timespec="seconds"), "all_jobs_sync", "sync", "1", "0", f"error={e}"])
-            _add_result(all_jobs_task.name, all_jobs_task.last_exit, all_jobs_task.last_summary)
-            _plain_print(f"all_jobs_sync: {all_jobs_task.last_summary}")
-            _update_live(live_ctx)
+            # All-jobs sheet sync is now a manual command (push-all-jobs).
 
             # Send ONE pushover notification per cycle.
             # - If we have new relevant jobs: send titles only.
@@ -837,9 +864,9 @@ def score_today(
     max_jobs: int = typer.Option(50, help="Maximum jobs to score in one run."),
     concurrency: int = typer.Option(2, help="Scoring concurrency."),
     model: str = typer.Option("", help="Ollama model (default qwen2.5:7b-instruct)."),
-    update_sheet: bool = typer.Option(True, "--update-sheet/--no-update-sheet", help="Update Jobs_Today with score columns (J:L)."),
+    update_sheet: bool = typer.Option(True, "--update-sheet/--no-update-sheet", help="Update Jobs_Today with score columns (I:K)."),
 ) -> None:
-    """Score recent relevant jobs from the DB and optionally update Jobs_Today (J:L)."""
+    """Score recent relevant jobs from the DB and optionally update Jobs_Today (I:K)."""
     from .config import load_config
     from .job_scoring import score_recent_jobs
     from .job_scoring_sheet import score_unscored_sheet_rows
@@ -900,7 +927,7 @@ def score_today_alias(
     max_jobs: int = typer.Option(50, help="Maximum jobs to score in one run."),
     concurrency: int = typer.Option(2, help="Scoring concurrency."),
     model: str = typer.Option("", help="Ollama model (default qwen2.5:7b-instruct)."),
-    update_sheet: bool = typer.Option(True, "--update-sheet/--no-update-sheet", help="Update Jobs_Today with score columns (J:L)."),
+    update_sheet: bool = typer.Option(True, "--update-sheet/--no-update-sheet", help="Update Jobs_Today with score columns (I:K)."),
 ) -> None:
     """Alias for score-today (underscore variant)."""
     return score_today(
@@ -960,7 +987,7 @@ def score_cached(
     model: str = typer.Option("", help="Ollama model (default qwen2.5:7b-instruct)."),
     extract_missing: bool = typer.Option(False, help="Attempt text extraction for missing cache entries."),
 ) -> None:
-    """Score Jobs_Today rows using cached job text, and update columns J:L."""
+    """Score Jobs_Today rows using cached job text, and update columns I:K."""
     from .config import load_config
     from .job_scoring_cached import score_unscored_sheet_rows_from_cache
     from .llm_score import DEFAULT_MODEL
@@ -1050,6 +1077,33 @@ def score_unscored(
     )
 
     console.print(f"scored={summary['scored']} updated_rows={summary['updated_rows']} errors={summary['errors']}")
+
+
+@app.command(name="push-all-jobs")
+def push_all_jobs(
+    sheet_id: str = typer.Option("", help="Google Sheet ID (or set SHEET_ID in data/config.env)."),
+    tab: str = typer.Option("", help="Destination tab name (default ALL_JOBS_TAB)."),
+) -> None:
+    """Export SQLite -> CSV and push it to the All jobs sheet tab.
+
+    This was removed from the automatic dashboard pipeline because it can be slow/noisy.
+    """
+    from .config import load_config
+    from .export_all_jobs import ExportConfig, export_all_jobs_csv
+    from .sheets_all_jobs import AllJobsSheetConfig, write_all_jobs_csv_to_sheet
+
+    cfg = load_config()
+    sheet_id = sheet_id or cfg.sheet_id
+    tab = tab or cfg.all_jobs_tab
+
+    if not sheet_id:
+        console.print("sheet_id is required")
+        raise typer.Exit(2)
+
+    export_all_jobs_csv()
+    csv_path = ExportConfig().out_csv
+    uploaded = write_all_jobs_csv_to_sheet(AllJobsSheetConfig(sheet_id=sheet_id, tab=tab), csv_path)
+    console.print(f"uploaded_rows={uploaded} tab={tab}")
 
 
 @app.command()

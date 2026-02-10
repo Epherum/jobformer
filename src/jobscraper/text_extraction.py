@@ -167,6 +167,7 @@ def extract_text_for_urls(
     cdp_url: Optional[str] = None,
     max_jobs: Optional[int] = None,
     refresh: bool = False,
+    progress_cb: Optional[callable] = None,
 ) -> dict:
     urls = [u for u in urls if u]
     if not urls:
@@ -216,6 +217,11 @@ def extract_text_for_urls(
         stats["fetched"] += 1
         if res.status in stats:
             stats[res.status] += 1
+        if progress_cb is not None:
+            try:
+                progress_cb(res, stats)
+            except Exception:
+                pass
 
     # CDP-first sequential
     for i, url in enumerate(cdp_first_urls):
@@ -276,7 +282,7 @@ def extract_text_for_sheet(
         if len(r) < 7:
             continue
         url = (r[6] or "").strip()
-        llm_score = (r[9] or "").strip() if len(r) > 9 else ""
+        llm_score = (r[8] or "").strip() if len(r) > 8 else ""
         if url and not llm_score:
             urls.append(url)
 
