@@ -160,6 +160,7 @@ def _task_next_run(task: Task, now_ts: float) -> float:
 class DashboardState:
     phase: str = "starting"
     cycle_no: int = 0
+    started_ts: float = 0.0
     new_relevant: int = 0
     issues: int = 0
     unscored_remaining: Optional[int] = None
@@ -247,7 +248,7 @@ def _refresh_dashboard_layout(layout: Layout, tasks: List[Task], now_ts: float, 
     header.add_row(
         f"[bold]Cache ok/blocked:[/bold] {state.cache_ok}/{state.cache_blocked}",
         f"[bold]Cycle:[/bold] {state.cycle_no}",
-        f"[bold]Time:[/bold] {_now().astimezone().strftime('%H:%M:%S')}",
+        f"[bold]Uptime:[/bold] {_fmt_secs(int(max(0, now_ts - (state.started_ts or now_ts))))}",
         "",
     )
     layout["header"].update(Panel(header, title="JobScraper", padding=(0, 1)))
@@ -499,7 +500,7 @@ Start-Process $Chrome -ArgumentList @(
     disable_score = (os.getenv("DISABLE_LLM_SCORE") or "").strip().lower() in {"1", "true", "yes", "y"}
 
     dashboard_rows = tasks + [extract_task, score_task, notify_task]
-    state = DashboardState(sources_total=len(tasks))
+    state = DashboardState(sources_total=len(tasks), started_ts=time.time())
     is_tty = console.is_terminal and sys.stdout.isatty()
 
     def _add_result(name: str, exit_code: Optional[int], summary: str) -> None:
