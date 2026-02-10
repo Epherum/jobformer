@@ -204,13 +204,14 @@ def _init_dashboard_layout(progress: Progress) -> Layout:
 
     # Small static ASCII decal, kept stable to avoid any layout reflow/flicker.
     # Keep it static (no animation) and fixed-height to avoid reflow.
+    # Compact logo to avoid cropping in narrower terminals.
     ascii_logo = (
-        "   _       _      _____                             \n"
-        "  (_) ___ | |__  |  ___|__  _ __ _ __ ___   ___ _ __\n"
-        "  | |/ _ \\| '_ \\ | |_ / _ \\| '__| '_ ` _ \\ / _ \\ '__|\n"
-        "  | | (_) | |_) ||  _| (_) | |  | | | | | |  __/ |   \n"
-        " _/ |\\___/|_.__/ |_|  \\___/|_|  |_| |_| |_|\\___|_|   \n"
-        "|__/\n"
+        "     _       _      __                        \n"
+        "    (_) ___ | |__  / _| ___  _ __ _ __ ___   \n"
+        "    | |/ _ \\| '_ \\| |_ / _ \\| '__| '_ ` _ \\  \n"
+        "    | | (_) | |_) |  _| (_) | |  | | | | | | \n"
+        "   _/ |\\___/|_.__/|_|  \\___/|_|  |_| |_| |_| \n"
+        "  |__/\n"
     )
 
     # Keep ASCII stable and avoid wrapping, which makes it look "messed up".
