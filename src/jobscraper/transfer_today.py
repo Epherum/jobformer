@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from dataclasses import dataclass
 from typing import List
+
+from .gog import run_gog
 
 
 @dataclass
@@ -12,14 +13,12 @@ class TransferConfig:
     from_tab: str = "Jobs_Today"
     to_tab: str = "Jobs"
     account: str = "wassimfekih2@gmail.com"
-    # Keep range wide enough for our current Jobs schema (A:I)
-    range_cols: str = "A:I"
+    # Keep range wide enough for our current Jobs schema (A:L)
+    range_cols: str = "A:L"
 
 
 def _run_gog(args: List[str]) -> str:
-    proc = subprocess.run(args, capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError(f"gog failed: {' '.join(args)}\n{proc.stderr}\n{proc.stdout}")
+    proc = run_gog(args, check=True)
     return proc.stdout
 
 
@@ -45,13 +44,13 @@ def fetch_rows(cfg: TransferConfig) -> list[list[str]]:
 
     rows = values[1:]
 
-    # normalize row length to 9 cols
+    # normalize row length to 12 cols
     norm: list[list[str]] = []
     for r in rows:
         r = list(r)
-        if len(r) < 9:
-            r = r + [""] * (9 - len(r))
-        norm.append(r[:9])
+        if len(r) < 12:
+            r = r + [""] * (12 - len(r))
+        norm.append(r[:12])
 
     return norm
 

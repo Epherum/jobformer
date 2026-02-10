@@ -86,7 +86,7 @@ def _run(cmd: List[str], timeout_s: int = 600) -> Tuple[int, str]:
     return proc.returncode, out
 
 
-def _parse_summary(task: Task, output: str) -> str:
+def _parse_summary(task: Task, output: str, exit_code: Optional[int] = None) -> str:
     # Try to parse main stats from run.py
     m = STAT_RE.search(output)
     if m:
@@ -96,6 +96,14 @@ def _parse_summary(task: Task, output: str) -> str:
     mw = WATCH_RE.search(output)
     if mw:
         return f"new_relevant={mw.group('count')}"
+
+    lines = [ln.strip() for ln in (output or "").splitlines() if ln.strip()]
+    if lines:
+        cleaned = [ln for ln in lines if "DeprecationWarning" not in ln]
+        if not cleaned:
+            cleaned = lines
+        if exit_code and exit_code != 0:
+            return cleaned[-1][:160]
 
     # Otherwise short fallback
     out = " ".join((output or "").strip().split())
@@ -122,6 +130,10 @@ def _detect_issues(task: Task, code: int, output: str) -> list[str]:
         issues.append(f"{task.name}: forbidden/blocked (403)")
     if "Web Page Blocked" in o:
         issues.append(f"{task.name}: blocked")
+    if "connect_over_cdp" in o or "CDP" in o and "Timeout" in o:
+        issues.append(f"{task.name}: CDP connect timeout/busy")
+    if "ECONNREFUSED" in o and "922" in o:
+        issues.append(f"{task.name}: CDP refused (Chrome not running?)")
 
     # De-dupe
     out: list[str] = []
@@ -208,13 +220,16 @@ def dashboard(
     all_jobs_tab: str = typer.Option("", help="Tab name for full DB export."),
     interval_min: int = typer.Option(0, help="Full cycle interval minutes."),
     log_csv: Path = typer.Option(DEFAULT_LOG, help="CSV run log path."),
+    show_windows_snippet: bool = typer.Option(False, help="Print the Windows PowerShell snippet for starting Chrome in CDP mode."),
 ) -> None:
     """Live dashboard loop.
 
     Behavior:
-    - Prints the exact Windows command to start Chrome in CDP mode + open the required sites.
     - Runs the smoke test automatically.
     - If smoke fails, exits before starting the dashboard loop.
+
+    Tip:
+    - Pass --show-windows-snippet if you need the PowerShell helper to start CDP Chrome.
     """
 
     from .config import AppConfig, load_config
@@ -238,12 +253,13 @@ def dashboard(
         interval_min=interval_min,
     )
 
-    # Always print the Windows snippet first so you can quickly start CDP Chrome.
-    tanit_url = "https://www.tanitjobs.com/jobs/"
-    aneti_url = "https://www.emploi.nat.tn/fo/Fr/global.php?page=146&=true&FormLinks_Sorting=7&FormLinks_Sorted=7"
-    console.print("\nWindows (PowerShell) snippet to start Chrome in CDP mode and open the 2 sites:")
-    console.print(
-        """
+    if show_windows_snippet:
+        # Optional helper snippet to quickly start CDP Chrome from Windows.
+        tanit_url = "https://www.tanitjobs.com/jobs/"
+        aneti_url = "https://www.emploi.nat.tn/fo/Fr/global.php?page=146&=true&FormLinks_Sorting=7&FormLinks_Sorted=7"
+        console.print("\nWindows (PowerShell) snippet to start Chrome in CDP mode and open the 2 sites:")
+        console.print(
+            """
 # Pick chrome.exe (adjust if needed)
 $Chrome = "$env:ProgramFiles\\Google\\Chrome\\Application\\chrome.exe"
 if (!(Test-Path $Chrome)) { $Chrome = "$env:ProgramFiles(x86)\\Google\\Chrome\\Application\\chrome.exe" }
@@ -252,14 +268,14 @@ if (!(Test-Path $Chrome)) { $Chrome = "$env:ProgramFiles(x86)\\Google\\Chrome\\A
 $UserData = "$env:LOCALAPPDATA\\JobScraperChrome"
 
 Start-Process $Chrome -ArgumentList @(
-  "--remote-debugging-port=9224", 
+  "--remote-debugging-port=9224",
   "--user-data-dir=$UserData",
   """ + tanit_url + """,
   """ + aneti_url + """
 )
 """.strip()
-    )
-    console.print(f"Expected CDP URL from WSL: {effective_cfg.cdp_url} (should respond at /json/version)\n")
+        )
+        console.print(f"Expected CDP URL from WSL: {effective_cfg.cdp_url} (should respond at /json/version)\n")
 
     # Auto smoke test.
     results = smoke_checks(effective_cfg)
@@ -303,6 +319,36 @@ Start-Process $Chrome -ArgumentList @(
         )
         for s in sources
     ]
+
+    # Extra transparency rows in the dashboard.
+    all_jobs_task = Task(
+        name="all_jobs_sync",
+        kind="sync",
+        interval_s=interval_min * 60,
+        cmd=[],
+        last_summary="pending",
+    )
+    notify_task = Task(
+        name="notify",
+        kind="notify",
+        interval_s=interval_min * 60,
+        cmd=[],
+        last_summary="pending",
+    )
+    extract_task = Task(
+        name="extract_text",
+        kind="extract",
+        interval_s=interval_min * 60,
+        cmd=[],
+        last_summary="pending",
+    )
+    score_task = Task(
+        name="llm_score",
+        kind="score",
+        interval_s=interval_min * 60,
+        cmd=[],
+        last_summary="pending",
+    )
 
     # LinkedIn: render as separate dashboard rows (TN/FR/GR) instead of one combined row.
     # We infer the URL -> label from geoId.
@@ -356,8 +402,12 @@ Start-Process $Chrome -ArgumentList @(
     # We'll export SQLite -> CSV and sync it to "All jobs" after each cycle.
     export_cmd = [sys.executable, "-c", "from jobscraper.export_all_jobs import export_all_jobs_csv; export_all_jobs_csv()"]
 
+    disable_score = (os.getenv("DISABLE_LLM_SCORE") or "").strip().lower() in {"1", "true", "yes", "y"}
+
+    dashboard_rows = tasks + [extract_task, score_task, all_jobs_task, notify_task]
+
     # Loop
-    with Live(_build_table(tasks, time.time()), refresh_per_second=2, console=console) as live:
+    with Live(_build_table(dashboard_rows, time.time()), refresh_per_second=2, console=console) as live:
         while True:
             cycle_start = time.time()
             cycle_lines: List[str] = []
@@ -378,7 +428,7 @@ Start-Process $Chrome -ArgumentList @(
                 # Important: we run a full cycle (all sources), then start ONE timer.
                 # So we do NOT stamp per-task last_run_ts here.
                 t.last_exit = code
-                t.last_summary = _parse_summary(t, out)
+                t.last_summary = _parse_summary(t, out, exit_code=code)
 
                 _append_log(
                     log_csv,
@@ -409,32 +459,99 @@ Start-Process $Chrome -ArgumentList @(
                             cycle_lines.append(title_only)
 
                 # Update view after each task.
-                live.update(_build_table(tasks, time.time()))
+                live.update(_build_table(dashboard_rows, time.time()))
 
             # Mark the cycle end. Align all task timers to this single point.
             cycle_end = time.time()
             for t in tasks:
                 t.last_run_ts = cycle_end
 
+            # Extract job text into cache.
+            extract_task.last_exit = None
+            extract_task.last_summary = "extracting text"
+            live.update(_build_table(dashboard_rows, time.time()))
+            try:
+                from jobscraper.text_extraction import extract_text_for_sheet
+
+                summary = extract_text_for_sheet(
+                    sheet_cfg=SheetsConfig(sheet_id=sheet_id, tab=jobs_today_tab, account=cfg.sheet_account),
+                    db_path=str(Path("data") / "jobs.sqlite3"),
+                    max_jobs=None,
+                    refresh=False,
+                )
+                extract_task.last_exit = 0
+                extract_task.last_summary = f"fetched={summary['fetched']} ok={summary['ok']} blocked={summary['blocked']}"
+            except Exception as e:
+                extract_task.last_exit = 1
+                extract_task.last_summary = f"error={e}"[:160]
+            live.update(_build_table(dashboard_rows, time.time()))
+
+            # LLM scoring from cached text.
+            score_task.last_exit = None
+            score_task.last_summary = "scoring"
+            live.update(_build_table(dashboard_rows, time.time()))
+            if disable_score:
+                score_task.last_exit = 0
+                score_task.last_summary = "skipped (DISABLE_LLM_SCORE=1)"
+            else:
+                try:
+                    from jobscraper.job_scoring_cached import score_unscored_sheet_rows_from_cache
+                    from jobscraper.llm_score import DEFAULT_MODEL
+
+                    model = (os.getenv("LLM_MODEL") or "").strip() or DEFAULT_MODEL
+                    max_jobs = int((os.getenv("TEXT_FETCH_MAX_JOBS") or "50").strip() or "50")
+
+                    summary = score_unscored_sheet_rows_from_cache(
+                        db_path=Path("data") / "jobs.sqlite3",
+                        model=model,
+                        sheet_cfg=SheetsConfig(sheet_id=sheet_id, tab=jobs_today_tab, account=cfg.sheet_account),
+                        max_jobs=max_jobs,
+                        concurrency=2,
+                        extract_missing=False,
+                    )
+                    score_task.last_exit = 0
+                    score_task.last_summary = f"scored={summary['scored']} updated={summary['updated_rows']} missing={summary['missing']}"
+                except Exception as e:
+                    score_task.last_exit = 1
+                    score_task.last_summary = f"error={e}"[:160]
+
+            live.update(_build_table(dashboard_rows, time.time()))
+
             # Export all jobs CSV and sync it to All jobs tab.
+            all_jobs_task.last_exit = None
+            all_jobs_task.last_summary = "exporting CSV"
+            live.update(_build_table(dashboard_rows, time.time()))
             try:
                 _run(export_cmd, timeout_s=120)
                 from jobscraper.sheets_all_jobs import AllJobsSheetConfig, write_all_jobs_csv_to_sheet
                 from jobscraper.export_all_jobs import ExportConfig
+
+                all_jobs_task.last_summary = f"uploading to sheet tab={all_jobs_tab}"
+                live.update(_build_table(dashboard_rows, time.time()))
 
                 csv_path = ExportConfig().out_csv
                 uploaded = write_all_jobs_csv_to_sheet(
                     AllJobsSheetConfig(sheet_id=sheet_id, tab=all_jobs_tab),
                     csv_path,
                 )
+                all_jobs_task.last_exit = 0
+                all_jobs_task.last_summary = f"uploaded rows={uploaded}"
                 _append_log(log_csv, [_now().isoformat(timespec="seconds"), "all_jobs_sync", "sync", "0", "0", f"rows={uploaded}"])
             except Exception as e:
+                all_jobs_task.last_exit = 1
+                all_jobs_task.last_summary = f"error={e}"[:160]
                 _append_log(log_csv, [_now().isoformat(timespec="seconds"), "all_jobs_sync", "sync", "1", "0", f"error={e}"])
+            live.update(_build_table(dashboard_rows, time.time()))
 
             # Send ONE pushover notification per cycle.
             # - If we have new relevant jobs: send titles only.
             # - If we have issues (best-effort mode): include a short issues section.
+            notify_task.last_exit = 0
+            notify_task.last_summary = "no notification"
             if cycle_lines or cycle_issues:
+                notify_task.last_summary = "sending pushover"
+                live.update(_build_table(dashboard_rows, time.time()))
+
                 from jobscraper.alerts.pushover import send_summary
 
                 lines: List[str] = []
@@ -460,13 +577,20 @@ Start-Process $Chrome -ArgumentList @(
                 if cycle_issues:
                     title += f" | {len(set(cycle_issues))} issues"
 
-                send_summary(title=title, lines=lines)
+                try:
+                    send_summary(title=title, lines=lines)
+                    notify_task.last_exit = 0
+                    notify_task.last_summary = f"sent ({len(cycle_lines)} new)"
+                except Exception as e:
+                    notify_task.last_exit = 1
+                    notify_task.last_summary = f"error={e}"[:160]
+            live.update(_build_table(dashboard_rows, time.time()))
 
             # sleep until next cycle
             elapsed = time.time() - cycle_start
             sleep_s = max(1, interval_min * 60 - elapsed)
             for _ in range(int(sleep_s)):
-                live.update(_build_table(tasks, time.time()))
+                live.update(_build_table(dashboard_rows, time.time()))
                 time.sleep(1)
 
 
@@ -531,6 +655,187 @@ def transfer_today(
     console.print(f"moved_rows={n}")
 
 
+@app.command(name="score-today")
+def score_today(
+    sheet_id: str = typer.Option("", help="Google Sheet ID (or set SHEET_ID in data/config.env)."),
+    sheet_tab: str = typer.Option("", help="Sheet tab to update (default Jobs_Today)."),
+    since_hours: int = typer.Option(24, help="Lookback window in hours."),
+    max_jobs: int = typer.Option(50, help="Maximum jobs to score in one run."),
+    concurrency: int = typer.Option(2, help="Scoring concurrency."),
+    model: str = typer.Option("", help="Ollama model (default qwen2.5:7b-instruct)."),
+    update_sheet: bool = typer.Option(True, "--update-sheet/--no-update-sheet", help="Update Jobs_Today with score columns (J:L)."),
+) -> None:
+    """Score recent relevant jobs from the DB and optionally update Jobs_Today (J:L)."""
+    from .config import load_config
+    from .job_scoring import score_recent_jobs
+    from .job_scoring_sheet import score_unscored_sheet_rows
+    from .llm_score import DEFAULT_MODEL
+    from .sheets_sync import SheetsConfig
+
+    cfg = load_config()
+    sheet_id = sheet_id or cfg.sheet_id
+    sheet_tab = sheet_tab or cfg.jobs_today_tab
+
+    if update_sheet and not sheet_id:
+        console.print("sheet_id is required when --update-sheet is set")
+        raise typer.Exit(2)
+
+    end_ts = time.time()
+    start_ts = end_ts - (since_hours * 3600)
+
+    sheet_cfg = None
+    if update_sheet and sheet_id:
+        sheet_cfg = SheetsConfig(sheet_id=sheet_id, tab=sheet_tab, account=cfg.sheet_account)
+
+    if update_sheet and sheet_cfg is not None:
+        # Score the sheet rows directly so results show up in Jobs_Today.
+        summary = score_unscored_sheet_rows(
+            db_path=Path("data") / "jobs.sqlite3",
+            model=model.strip() or DEFAULT_MODEL,
+            sheet_cfg=sheet_cfg,
+            max_jobs=max_jobs,
+            concurrency=1,
+        )
+
+        console.print(
+            f"scored={summary['scored']} updated_rows={summary['updated_rows']} candidates={summary['candidates']} errors={summary['errors']}"
+        )
+    else:
+        summary = score_recent_jobs(
+            db_path=Path("data") / "jobs.sqlite3",
+            start_ts=start_ts,
+            end_ts=end_ts,
+            model=model.strip() or DEFAULT_MODEL,
+            sheet_cfg=sheet_cfg,
+            update_sheet=update_sheet,
+            max_jobs=max_jobs,
+            concurrency=concurrency,
+        )
+
+        console.print(
+            f"scored={summary['scored']} updated_rows={summary['updated_rows']} filtered={summary['filtered']} "
+            f"errors={summary['errors']} linkedin_skipped={summary.get('linkedin_skipped', 0)}"
+        )
+
+
+@app.command(name="extract-text")
+def extract_text(
+    sheet_id: str = typer.Option("", help="Google Sheet ID (or set SHEET_ID in data/config.env)."),
+    sheet_tab: str = typer.Option("", help="Sheet tab to read (default Jobs_Today)."),
+    max_jobs: int = typer.Option(0, help="Maximum jobs to fetch in one run (0=env/default)."),
+    refresh: bool = typer.Option(False, help="Force refresh even if cached text exists."),
+    verbose: bool = typer.Option(False, help="Print a short per-URL result line."),
+) -> None:
+    """Extract job page text into SQLite cache (job_text_cache)."""
+    from .config import load_config
+    from .text_extraction import extract_text_for_sheet
+    from .sheets_sync import SheetsConfig
+
+    cfg = load_config()
+    sheet_id = sheet_id or cfg.sheet_id
+    sheet_tab = sheet_tab or cfg.jobs_today_tab
+
+    if not sheet_id:
+        console.print("sheet_id is required")
+        raise typer.Exit(2)
+
+    effective_max = max_jobs if max_jobs > 0 else None
+
+    summary = extract_text_for_sheet(
+        sheet_cfg=SheetsConfig(sheet_id=sheet_id, tab=sheet_tab, account=cfg.sheet_account),
+        db_path=str(Path("data") / "jobs.sqlite3"),
+        max_jobs=effective_max,
+        refresh=refresh,
+        verbose=verbose,
+    )
+
+    console.print(
+        f"candidates={summary['candidates']} fetched={summary['fetched']} ok={summary['ok']} "
+        f"blocked={summary['blocked']} empty={summary['empty']} errors={summary['errors']}"
+    )
+
+
+@app.command(name="score-cached")
+def score_cached(
+    sheet_id: str = typer.Option("", help="Google Sheet ID (or set SHEET_ID in data/config.env)."),
+    sheet_tab: str = typer.Option("", help="Sheet tab to update (default Jobs_Today)."),
+    max_jobs: int = typer.Option(50, help="Maximum jobs to score in one run."),
+    concurrency: int = typer.Option(2, help="Scoring concurrency."),
+    model: str = typer.Option("", help="Ollama model (default qwen2.5:7b-instruct)."),
+    extract_missing: bool = typer.Option(False, help="Attempt text extraction for missing cache entries."),
+) -> None:
+    """Score Jobs_Today rows using cached job text, and update columns J:L."""
+    from .config import load_config
+    from .job_scoring_cached import score_unscored_sheet_rows_from_cache
+    from .llm_score import DEFAULT_MODEL
+    from .sheets_sync import SheetsConfig
+
+    cfg = load_config()
+    sheet_id = sheet_id or cfg.sheet_id
+    sheet_tab = sheet_tab or cfg.jobs_today_tab
+
+    if not sheet_id:
+        console.print("sheet_id is required")
+        raise typer.Exit(2)
+
+    summary = score_unscored_sheet_rows_from_cache(
+        db_path=Path("data") / "jobs.sqlite3",
+        model=model.strip() or DEFAULT_MODEL,
+        sheet_cfg=SheetsConfig(sheet_id=sheet_id, tab=sheet_tab, account=cfg.sheet_account),
+        max_jobs=max_jobs,
+        concurrency=concurrency,
+        extract_missing=extract_missing,
+    )
+
+    # If there were errors, print a hint to enable more verbose debugging.
+    if summary.get("errors"):
+        console.print("note: scoring had errors. Next step: rerun with --concurrency 1 and we can add per-URL error prints.")
+
+    console.print(
+        f"scored={summary['scored']} updated_rows={summary['updated_rows']} missing={summary['missing']} errors={summary['errors']}"
+    )
+
+
+@app.command(name="score-unscored")
+def score_unscored(
+    sheet_id: str = typer.Option("", help="Google Sheet ID (or set SHEET_ID in data/config.env)."),
+    sheet_tab: str = typer.Option("", help="Sheet tab to update (default Jobs_Today)."),
+    batch_size: int = typer.Option(25, help="How many rows to score per batch."),
+    max_batches: int = typer.Option(50, help="Safety cap on number of batches."),
+    model: str = typer.Option("", help="Ollama model (default qwen2.5:7b-instruct)."),
+) -> None:
+    """Score all unscored rows currently present in Jobs_Today (loop in batches)."""
+
+    from .config import load_config
+    from .llm_score import DEFAULT_MODEL
+    from .score_unscored_sheet import score_all_unscored_sheet_rows
+    from .sheets_sync import SheetsConfig
+
+    cfg = load_config()
+    sheet_id = sheet_id or cfg.sheet_id
+    sheet_tab = sheet_tab or cfg.jobs_today_tab
+
+    if not sheet_id:
+        console.print("sheet_id is required")
+        raise typer.Exit(2)
+
+    sheet_cfg = SheetsConfig(sheet_id=sheet_id, tab=sheet_tab, account=cfg.sheet_account)
+
+    def _progress(batch_no: int, s: dict) -> None:
+        console.print(f"batch={batch_no} candidates={s['candidates']} scored={s['scored']} updated={s['updated_rows']} errors={s['errors']}")
+
+    summary = score_all_unscored_sheet_rows(
+        sheet_cfg=sheet_cfg,
+        model=model.strip() or DEFAULT_MODEL,
+        batch_size=batch_size,
+        max_batches=max_batches,
+        sleep_s=0.5,
+        progress_cb=_progress,
+    )
+
+    console.print(f"scored={summary['scored']} updated_rows={summary['updated_rows']} errors={summary['errors']}")
+
+
 @app.command()
 def run_all(sheet_id: str = typer.Argument(...), notify: bool = True) -> None:
     """Run Tier-1 sources once."""
@@ -541,7 +846,7 @@ def run_all(sheet_id: str = typer.Argument(...), notify: bool = True) -> None:
             cmd.append("--notify")
         code, out = _run(cmd)
         console.print(f"{s}: exit={code}")
-        console.print(_parse_summary(Task(s, 'run', 0, []), out))
+        console.print(_parse_summary(Task(s, 'run', 0, []), out, exit_code=code))
 
 
 if __name__ == "__main__":

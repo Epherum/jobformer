@@ -5,9 +5,7 @@ import re
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
-from playwright.sync_api import TimeoutError as PWTimeoutError
-from playwright.sync_api import sync_playwright
-
+from ..cdp_session import get_cdp_browser, invalidate_cdp_browser
 from ..models import Job
 
 
@@ -96,60 +94,72 @@ def scrape_aneti(cfg: AnetiConfig) -> Tuple[List[Job], str]:
 
     jobs: List[Job] = []
 
-    with sync_playwright() as p:
-        browser = p.chromium.connect_over_cdp(cfg.cdp_url, timeout=cfg.timeout_ms)
-        ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+    try:
+        browser = get_cdp_browser(
+            cfg.cdp_url,
+            timeout_ms=cfg.timeout_ms,
+            retries=2,
+            backoff_s=0.8,
+            raise_on_fail=True,
+        )
+    except RuntimeError as e:
+        return [], f"cdp_error: {e}"
 
-        page = ctx.new_page()
-        page.set_default_timeout(cfg.timeout_ms)
+    ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+
+    page = ctx.new_page()
+    page.set_default_timeout(cfg.timeout_ms)
+    try:
+        page.goto(cfg.list_url, wait_until="domcontentloaded")
+        page.wait_for_timeout(1500)
+
+        body = page.inner_text("body") or ""
+        if "Web Page Blocked" in body:
+            return [], "blocked"
+
+        # Grab offer links and their closest <tr> text.
+        items = page.eval_on_selector_all(
+            "a[href]",
+            """
+            els => {
+              const out=[];
+              for (const a of els) {
+                const href=a.getAttribute('href')||'';
+                if (!href.includes('global.php?page=990')) continue;
+                if (!href.includes('bureau=')) continue;
+                const tr=a.closest('tr');
+                const rowText=tr ? (tr.innerText||'').trim() : (a.textContent||'').trim();
+                out.push({href, rowText});
+              }
+              return out;
+            }
+            """,
+        )
+
+        links: List[Tuple[str, str]] = []
+        for it in items:
+            h = it.get('href') or ''
+            if _DETAIL_RE.search(h):
+                links.append((_abs(page.url, h), (it.get('rowText') or '').strip()))
+
+        # De-dupe preserving order
+        seen = set()
+        links_u: List[Tuple[str, str]] = []
+        for u, rowText in links:
+            if u in seen:
+                continue
+            seen.add(u)
+            links_u.append((u, rowText))
+
+        for u, rowText in links_u[: cfg.max_offers]:
+            jobs.append(_extract_from_row(rowText, u))
+
+        return jobs, "cdp_list"
+    except Exception:
+        invalidate_cdp_browser()
+        raise
+    finally:
         try:
-            page.goto(cfg.list_url, wait_until="domcontentloaded")
-            page.wait_for_timeout(1500)
-
-            body = page.inner_text("body") or ""
-            if "Web Page Blocked" in body:
-                return [], "blocked"
-
-            # Grab offer links and their closest <tr> text.
-            items = page.eval_on_selector_all(
-                "a[href]",
-                """
-                els => {
-                  const out=[];
-                  for (const a of els) {
-                    const href=a.getAttribute('href')||'';
-                    if (!href.includes('global.php?page=990')) continue;
-                    if (!href.includes('bureau=')) continue;
-                    const tr=a.closest('tr');
-                    const rowText=tr ? (tr.innerText||'').trim() : (a.textContent||'').trim();
-                    out.push({href, rowText});
-                  }
-                  return out;
-                }
-                """,
-            )
-
-            links: List[Tuple[str, str]] = []
-            for it in items:
-                h = it.get('href') or ''
-                if _DETAIL_RE.search(h):
-                    links.append((_abs(page.url, h), (it.get('rowText') or '').strip()))
-
-            # De-dupe preserving order
-            seen = set()
-            links_u: List[Tuple[str, str]] = []
-            for u, rowText in links:
-                if u in seen:
-                    continue
-                seen.add(u)
-                links_u.append((u, rowText))
-
-            for u, rowText in links_u[: cfg.max_offers]:
-                jobs.append(_extract_from_row(rowText, u))
-
-            return jobs, "cdp_list"
-        finally:
-            try:
-                page.close()
-            except Exception:
-                pass
+            page.close()
+        except Exception:
+            pass

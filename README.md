@@ -6,6 +6,7 @@ What it does:
 - Scrapes multiple job boards into a local SQLite DB (`data/jobs.sqlite3`).
 - Exports the full DB to `data/all_jobs.csv` and syncs it into the Google Sheet tab **All jobs** (for analytics).
 - Appends **relevant** jobs into a lightweight daily inbox tab **Jobs_Today**.
+- Scores newly seen relevant jobs with a local LLM (Ollama Qwen) and writes back to `Jobs_Today`.
 - You review Jobs_Today, then run a command that transfers the rows into **Jobs** (your editable workflow tab with dropdown + notes).
 - Sends **one Pushover notification** per full cycle when new relevant jobs were found.
 
@@ -33,6 +34,8 @@ Fill:
 - `SHEET_ACCOUNT`
 - `CDP_URL` (Chrome/Edge launched with `--remote-debugging-port=9223`)
 
+LinkedIn scoring needs an authenticated Chrome session over CDP (logged in to LinkedIn). If CDP is not reachable, LinkedIn jobs are skipped with a warning.
+
 ### Pushover
 
 Create `data/pushover.env`:
@@ -52,8 +55,11 @@ Create these tabs:
 - `Jobs` (your workflow tab: decision dropdown + notes)
 - `All jobs` (full export for analytics)
 
-Recommended `Jobs` schema (A:I):
-- date_added, source, title, company, location, url, labels, decision, notes
+LLM scoring adds columns J:M on Jobs/Jobs_Today:
+- llm_score, llm_decision, llm_reasons, llm_model
+
+Recommended `Jobs` schema (A:M):
+- source, labels, title, company, location, date_added, url, decision, notes, llm_score, llm_decision, llm_reasons, llm_model
 
 Set a **dropdown** on `Jobs!H:H` with values:
 - NEW
@@ -86,11 +92,26 @@ Runs all sources every `INTERVAL_MIN` minutes.
 python -m jobscraper dashboard
 ```
 
+Skip LLM scoring (for smoke tests):
+
+```bash
+DISABLE_LLM_SCORE=1 python -m jobscraper dashboard
+```
+
 ### Transfer today inbox into workflow
 
 ```bash
 python -m jobscraper transfer-today
 ```
+
+### Score recent relevant jobs (LLM)
+
+```bash
+python -m jobscraper score-today --since-hours 6
+```
+
+Optional env vars:
+- `LLM_MODEL` (default: qwen2.5:7b-instruct)
 
 ## Data
 - SQLite DB: `data/jobs.sqlite3`

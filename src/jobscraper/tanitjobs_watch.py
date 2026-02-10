@@ -10,6 +10,7 @@ from urllib.parse import unquote, urlparse
 from playwright.sync_api import TimeoutError as PWTimeoutError
 from playwright.sync_api import sync_playwright
 
+from jobscraper.cdp_session import get_cdp_browser, invalidate_cdp_browser
 from jobscraper.filtering import is_relevant
 from jobscraper.alerts.ntfy import send_many
 
@@ -53,25 +54,7 @@ def fetch_first_page_jobs(
 ) -> Tuple[List[Tuple[str, str]], str]:
     """Return list of (job_id, title) from the first page."""
 
-    with sync_playwright() as p:
-        browser = None
-        if cdp_url:
-            browser = p.chromium.connect_over_cdp(cdp_url, timeout=timeout_ms)
-            ctx = browser.contexts[0] if browser.contexts else browser.new_context()
-            page = ctx.new_page()
-        elif user_data_dir:
-            ctx = p.chromium.launch_persistent_context(
-                user_data_dir,
-                headless=headless,
-                viewport={"width": 1280, "height": 900},
-                locale="fr-FR",
-            )
-            page = ctx.new_page()
-        else:
-            browser = p.chromium.launch(headless=headless)
-            ctx = browser.new_context(viewport={"width": 1280, "height": 900}, locale="fr-FR")
-            page = ctx.new_page()
-
+    def _scrape(page) -> Tuple[List[Tuple[str, str]], str]:
         page.set_default_timeout(timeout_ms)
 
         try:
@@ -148,14 +131,56 @@ def fetch_first_page_jobs(
             return out, "ok"
         except PWTimeoutError:
             return [], "timeout"
+
+    if cdp_url:
+        try:
+            browser = get_cdp_browser(
+                cdp_url,
+                timeout_ms=timeout_ms,
+                retries=2,
+                backoff_s=0.8,
+                raise_on_fail=True,
+            )
+        except RuntimeError as e:
+            return [], f"cdp_error: {e}"
+
+        ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+        page = ctx.new_page()
+        try:
+            return _scrape(page)
+        except Exception:
+            invalidate_cdp_browser()
+            raise
         finally:
             try:
                 page.close()
             except Exception:
                 pass
-            if not cdp_url:
-                ctx.close()
-            if browser and not cdp_url:
+
+    with sync_playwright() as p:
+        browser = None
+        if user_data_dir:
+            ctx = p.chromium.launch_persistent_context(
+                user_data_dir,
+                headless=headless,
+                viewport={"width": 1280, "height": 900},
+                locale="fr-FR",
+            )
+            page = ctx.new_page()
+        else:
+            browser = p.chromium.launch(headless=headless)
+            ctx = browser.new_context(viewport={"width": 1280, "height": 900}, locale="fr-FR")
+            page = ctx.new_page()
+
+        try:
+            return _scrape(page)
+        finally:
+            try:
+                page.close()
+            except Exception:
+                pass
+            ctx.close()
+            if browser:
                 browser.close()
 
 

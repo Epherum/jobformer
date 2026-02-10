@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 from playwright.sync_api import TimeoutError as PWTimeoutError
-from playwright.sync_api import sync_playwright
 
+from ..cdp_session import get_cdp_browser, invalidate_cdp_browser
 from ..models import Job
 
 
@@ -43,141 +43,152 @@ def scrape_linkedin_first_page(cfg: LinkedInCDPConfig) -> Tuple[List[Job], str]:
 
     jobs: List[Job] = []
 
-    with sync_playwright() as p:
-        browser = p.chromium.connect_over_cdp(cfg.cdp_url, timeout=cfg.timeout_ms)
-        ctx = browser.contexts[0] if browser.contexts else browser.new_context()
-        page = ctx.new_page()
-        page.set_default_timeout(cfg.timeout_ms)
+    try:
+        browser = get_cdp_browser(
+            cfg.cdp_url,
+            timeout_ms=cfg.timeout_ms,
+            retries=2,
+            backoff_s=0.8,
+            raise_on_fail=True,
+        )
+    except RuntimeError as e:
+        return [], f"cdp_error: {e}"
 
+    ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+    page = ctx.new_page()
+    page.set_default_timeout(cfg.timeout_ms)
+
+    try:
         try:
+            page.goto(cfg.url, wait_until="domcontentloaded")
+        except PWTimeoutError:
+            pass
+
+        page.wait_for_timeout(2000)
+
+        for sel in [
+            "ul.scaffold-layout__list-container",
+            "div.jobs-search-results-list",
+            "main",
+        ]:
             try:
-                page.goto(cfg.url, wait_until="domcontentloaded")
+                page.wait_for_selector(sel, timeout=8_000)
+                break
             except PWTimeoutError:
-                pass
+                continue
 
-            page.wait_for_timeout(2000)
+        # Scroll a bit to load the visible first page cards.
+        page.evaluate(
+            """
+            () => {
+              const candidates = [
+                document.querySelector('div.scaffold-layout__list'),
+                document.querySelector('div.jobs-search-results-list'),
+                document.querySelector('ul.scaffold-layout__list-container')?.parentElement,
+              ].filter(Boolean);
 
-            for sel in [
-                "ul.scaffold-layout__list-container",
-                "div.jobs-search-results-list",
-                "main",
-            ]:
-                try:
-                    page.wait_for_selector(sel, timeout=8_000)
-                    break
-                except PWTimeoutError:
-                    continue
+              const scroller = candidates.find(el => el.scrollHeight > el.clientHeight) || candidates[0];
+              if (!scroller) return;
+              const steps = [0.25, 0.6, 0.95];
+              for (const t of steps) {
+                scroller.scrollTop = Math.floor(scroller.scrollHeight * t);
+              }
+            }
+            """
+        )
+        page.wait_for_timeout(900)
 
-            # Scroll a bit to load the visible first page cards.
-            page.evaluate(
-                """
-                () => {
-                  const candidates = [
-                    document.querySelector('div.scaffold-layout__list'),
-                    document.querySelector('div.jobs-search-results-list'),
-                    document.querySelector('ul.scaffold-layout__list-container')?.parentElement,
-                  ].filter(Boolean);
+        items = page.evaluate(
+            """
+            () => {
+              const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+              const jobIdFromHref = (href) => {
+                if (!href) return null;
+                const m = href.match(/\/jobs\/view\/(?:[^/?#]+-)?(\d+)/);
+                return m ? m[1] : null;
+              };
 
-                  const scroller = candidates.find(el => el.scrollHeight > el.clientHeight) || candidates[0];
-                  if (!scroller) return;
-                  const steps = [0.25, 0.6, 0.95];
-                  for (const t of steps) {
-                    scroller.scrollTop = Math.floor(scroller.scrollHeight * t);
-                  }
-                }
-                """
-            )
-            page.wait_for_timeout(900)
+              const root =
+                document.querySelector('ul.scaffold-layout__list-container') ||
+                document.querySelector('div.jobs-search-results-list') ||
+                document;
 
-            items = page.evaluate(
-                """
-                () => {
-                  const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
-                  const jobIdFromHref = (href) => {
-                    if (!href) return null;
-                    const m = href.match(/\/jobs\/view\/(?:[^/?#]+-)?(\d+)/);
-                    return m ? m[1] : null;
-                  };
+              const anchors = Array.from(root.querySelectorAll('a[href*="/jobs/view/"]'));
 
-                  const root =
-                    document.querySelector('ul.scaffold-layout__list-container') ||
-                    document.querySelector('div.jobs-search-results-list') ||
-                    document;
+              const out = [];
+              const seen = new Set();
 
-                  const anchors = Array.from(root.querySelectorAll('a[href*="/jobs/view/"]'));
+              for (const a of anchors) {
+                const href = a.getAttribute('href') || '';
+                const jobId = jobIdFromHref(href);
+                if (!jobId || seen.has(jobId)) continue;
 
-                  const out = [];
-                  const seen = new Set();
+                const card = a.closest('li') || a.closest('div');
 
-                  for (const a of anchors) {
-                    const href = a.getAttribute('href') || '';
-                    const jobId = jobIdFromHref(href);
-                    if (!jobId || seen.has(jobId)) continue;
+                // Title: prefer aria-hidden span (usually the clean title line).
+                const title = norm(
+                  a.querySelector('span[aria-hidden="true"]')?.innerText ||
+                  a.innerText ||
+                  a.getAttribute('aria-label') ||
+                  ''
+                );
 
-                    const card = a.closest('li') || a.closest('div');
+                // Company: prefer a company/school link inside the card.
+                const company = norm(
+                  card?.querySelector('.artdeco-entity-lockup__subtitle')?.innerText ||
+                  card?.querySelector('a[href*="/company/"]')?.innerText ||
+                  card?.querySelector('a[href*="/school/"]')?.innerText ||
+                  card?.querySelector('.job-card-container__primary-description')?.innerText ||
+                  card?.querySelector('span.job-card-container__primary-description')?.innerText ||
+                  card?.querySelector('.job-card-container__company-name')?.innerText ||
+                  ''
+                );
 
-                    // Title: prefer aria-hidden span (usually the clean title line).
-                    const title = norm(
-                      a.querySelector('span[aria-hidden="true"]')?.innerText ||
-                      a.innerText ||
-                      a.getAttribute('aria-label') ||
-                      ''
-                    );
+                const location = norm(
+                  card?.querySelector('.artdeco-entity-lockup__caption')?.innerText ||
+                  card?.querySelector('.job-card-container__metadata-item')?.innerText ||
+                  card?.querySelector('li.job-card-container__metadata-item')?.innerText ||
+                  card?.querySelector('[class*="metadata-item"]')?.innerText ||
+                  card?.querySelector('.job-card-container__metadata-wrapper')?.innerText ||
+                  ''
+                );
 
-                    // Company: prefer a company/school link inside the card.
-                    const company = norm(
-                      card?.querySelector('.artdeco-entity-lockup__subtitle')?.innerText ||
-                      card?.querySelector('a[href*="/company/"]')?.innerText ||
-                      card?.querySelector('a[href*="/school/"]')?.innerText ||
-                      card?.querySelector('.job-card-container__primary-description')?.innerText ||
-                      card?.querySelector('span.job-card-container__primary-description')?.innerText ||
-                      card?.querySelector('.job-card-container__company-name')?.innerText ||
-                      ''
-                    );
+                const jobUrl = href.startsWith('http') ? href : `https://www.linkedin.com${href}`;
 
-                    const location = norm(
-                      card?.querySelector('.artdeco-entity-lockup__caption')?.innerText ||
-                      card?.querySelector('.job-card-container__metadata-item')?.innerText ||
-                      card?.querySelector('li.job-card-container__metadata-item')?.innerText ||
-                      card?.querySelector('[class*="metadata-item"]')?.innerText ||
-                      card?.querySelector('.job-card-container__metadata-wrapper')?.innerText ||
-                      ''
-                    );
+                out.push({ jobId, title, company, location, jobUrl });
+                seen.add(jobId);
 
-                    const jobUrl = href.startsWith('http') ? href : `https://www.linkedin.com${href}`;
+                if (out.length >= 80) break;
+              }
 
-                    out.push({ jobId, title, company, location, jobUrl });
-                    seen.add(jobId);
+              return out;
+            }
+            """
+        )
 
-                    if (out.length >= 80) break;
-                  }
+        for it in items[: cfg.max_jobs]:
+            job_id = (it.get("jobId") or "").strip()
+            if not job_id:
+                continue
 
-                  return out;
-                }
-                """
-            )
-
-            for it in items[: cfg.max_jobs]:
-                job_id = (it.get("jobId") or "").strip()
-                if not job_id:
-                    continue
-
-                jobs.append(
-                    Job(
-                        source="linkedin",
-                        external_id=str(job_id),
-                        title=_clean_title(it.get("title") or ""),
-                        company=(it.get("company") or "").strip(),
-                        location=(it.get("location") or "").strip(),
-                        url=(it.get("jobUrl") or "").strip(),
-                        posted_at=None,
-                    )
+            jobs.append(
+                Job(
+                    source="linkedin",
+                    external_id=str(job_id),
+                    title=_clean_title(it.get("title") or ""),
+                    company=(it.get("company") or "").strip(),
+                    location=(it.get("location") or "").strip(),
+                    url=(it.get("jobUrl") or "").strip(),
+                    posted_at=None,
                 )
+            )
 
-            return jobs, "cdp_first_page"
-        finally:
-            try:
-                page.close()
-            except Exception:
-                pass
-            browser.close()
+        return jobs, "cdp_first_page"
+    except Exception:
+        invalidate_cdp_browser()
+        raise
+    finally:
+        try:
+            page.close()
+        except Exception:
+            pass

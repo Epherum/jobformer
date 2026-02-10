@@ -36,11 +36,7 @@ TOO_SENIOR_PATTERNS: list[str] = [
 
 # Keep this list conservative; it is easy to over-filter.
 DELETE_PATTERNS: list[str] = [
-    # Sales-heavy pipeline roles
-    r"sales\s+development\s+representative",
-    r"business\s+development\s+representative",
-    r"\bsdr\b",
-    r"\bbdr\b",
+    # Sales-heavy pipeline roles (allowed)
 
     # Non-software engineering / trades you flagged (FR/EN)
     r"électricit",
@@ -62,10 +58,7 @@ DELETE_PATTERNS: list[str] = [
     r"coffrage",
     r"ferraillage",
 
-    # QA/testing
-    r"\bqa\b",
-    r"test(\b|eur|euse)",
-    r"fonctionnel(le)?",
+    # QA/testing (allowed)
 
     # Accounting/HR/marketing/product/video
     r"comptab",
@@ -111,6 +104,25 @@ BROAD_RULES: List[KeywordRule] = [
             "full stack",
             "full-stack",
             "fullstack",
+            "full stack engineer",
+            "software engineer",
+            "frontend engineer",
+            "backend engineer",
+            "react developer",
+            "next.js",
+            "nextjs",
+            "node.js",
+            "nodejs",
+            "api engineer",
+            "integration engineer",
+            "implementation engineer",
+            "solutions engineer",
+            "sales engineer",
+            "technical consultant",
+            "consultant technique",
+            "creative developer",
+            "creative technologist",
+            "product engineer",
             "développeur",
             "developer",
             "ingénieur",
@@ -150,6 +162,49 @@ BROAD_RULES: List[KeywordRule] = [
             "technico-fonctionnel",
             "techno-fonctionnel",
             "sage",
+        ],
+    ),
+
+    # DATA / ANALYTICS (broad)
+    KeywordRule(
+        label="DATA",
+        keywords=[
+            # Roles
+            "data analyst",
+            "data analytics",
+            "analytics",
+            "business analyst",
+            "bi analyst",
+            "product analyst",
+            "reporting analyst",
+            "marketing analyst",
+            "business intelligence",
+            "bi developer",
+            "analytics engineer",
+            "data engineer",
+            # French variants
+            "analyste data",
+            "analyste de données",
+            "analyste de donnees",
+            "analyste décisionnel",
+            "analyste decisionnel",
+            "décisionnel",
+            "decisionnel",
+            "développeur bi",
+            "developpeur bi",
+            # Tools
+            "power bi",
+            "tableau",
+            "looker",
+            "lookml",
+            "bigquery",
+            "snowflake",
+            "dbt",
+            "excel",
+            "google sheets",
+            "etl",
+            "elt",
+            "data warehouse",
         ],
     ),
 
@@ -254,6 +309,61 @@ def decision_for_title(title: str) -> str:
     if not is_relevant(title):
         return DECISION_NEW
     return DECISION_TOO_SENIOR if is_too_senior(title) else DECISION_NEW
+
+
+_GERMAN_TITLE_HINTS = [
+    # very common German words seen in job titles
+    "entwickler",
+    "ingenieur",
+    "informatik",
+    "vollzeit",
+    "teilzeit",
+    "befristet",
+    "unbefristet",
+    "m/w/d",
+    "mwd",
+    "w/m/d",
+    "d/w/m",
+    " (m/w/d",
+    " (w/m/d",
+    " (mwd",
+    " sachbearbeiter",
+    " kaufm",
+    " kaufmann",
+    " kaufmänn",
+    " projektleiter",
+    " berater",
+    " beratung",
+    " (gn)",
+    " (m/f/d)",  # sometimes mixed but still a hint
+]
+
+
+def is_english_title(title: str) -> bool:
+    """Heuristic: returns False for clearly German job titles.
+
+    We keep this conservative; it's better to keep some German titles than to
+    incorrectly drop English ones.
+    """
+    t = (title or "").strip().lower()
+    if not t:
+        return True
+
+    # Hard German character hints
+    if any(ch in t for ch in ("ä", "ö", "ü", "ß")):
+        return False
+
+    # Common German title tokens / patterns
+    if any(h in t for h in _GERMAN_TITLE_HINTS):
+        return False
+
+    # If it's mostly ASCII and contains typical English job words, keep.
+    english_tokens = ["engineer", "developer", "frontend", "backend", "full stack", "full-stack", "software", "data", "machine learning", "devops"]
+    if any(tok in t for tok in english_tokens):
+        return True
+
+    # Default to True to avoid over-filtering.
+    return True
 
 
 def is_relevant(text: str, rules: Iterable[KeywordRule] = BROAD_RULES) -> bool:

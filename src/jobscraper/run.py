@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import os
+from dataclasses import replace
 from pathlib import Path
 
 from .db import JobDB
@@ -16,7 +17,7 @@ from .sources.remoteok import RemoteOKConfig, scrape_remoteok
 from .sources.remotive import RemotiveConfig, scrape_remotive
 from .sources.aneti import AnetiConfig, scrape_aneti
 from .sources.linkedin_cdp import LinkedInCDPConfig, scrape_linkedin_first_page
-from .filtering import is_relevant
+from .filtering import is_relevant, is_english_title
 from .sheets_sync import SheetsConfig, append_jobs, ensure_jobs_header
 from .alerts.pushover import send_summary
 
@@ -84,6 +85,9 @@ def main() -> int:
             cdp_url=cdp_url,
             max_jobs=80,
         )
+        if reason.startswith("cdp_error"):
+            print(f"tanitjobs: {reason}")
+            return 2
 
         jobs = []
         from .models import Job
@@ -221,7 +225,10 @@ def main() -> int:
         # CDP-only: ANETI blocks our server IP, so we use your Windows Chrome session.
         cdp_url = os.getenv("CDP_URL", "http://172.25.192.1:9223").strip() or "http://172.25.192.1:9223"
         cfg = AnetiConfig(cdp_url=cdp_url, max_offers=25)
-        jobs, _date_label = scrape_aneti(cfg=cfg)
+        jobs, reason = scrape_aneti(cfg=cfg)
+        if reason.startswith("cdp_error"):
+            print(f"aneti: {reason}")
+            return 2
         new_jobs = db.upsert_jobs(jobs)
 
         relevant_new = [j for j in new_jobs if is_relevant(j.title)]
@@ -265,7 +272,8 @@ def main() -> int:
             if "geoId=105015875" in u:
                 return "FR"
             if "geoId=101282230" in u:
-                return "DE"
+                # Dashboard uses GR label for Germany.
+                return "GR"
             return "LI"
 
         all_jobs = []
@@ -276,7 +284,17 @@ def main() -> int:
         for url in urls:
             label = _label_for_url(url)
             cfg = LinkedInCDPConfig(cdp_url=cdp_url, url=url, max_jobs=80)
-            jobs, _reason = scrape_linkedin_first_page(cfg=cfg)
+            jobs, reason = scrape_linkedin_first_page(cfg=cfg)
+            if reason.startswith("cdp_error"):
+                print(f"linkedin: {reason}")
+                return 2
+
+            # New rule: for Germany (GR), drop jobs whose title is not English (heuristic).
+            if label == "GR":
+                jobs = [j for j in jobs if is_english_title(j.title)]
+
+            # Store per-geo source in SQLite (e.g. 'linkedin TN') so history matches Sheets.
+            jobs = [replace(j, source=f"linkedin {label}") for j in jobs]
             scraped_total += len(jobs)
             by_label_scraped[label] = by_label_scraped.get(label, 0) + len(jobs)
             for j in jobs:
@@ -299,7 +317,7 @@ def main() -> int:
 
         details = " | ".join(
             f"{lab}: scraped={by_label_scraped.get(lab, 0)} new={by_label_new.get(lab, 0)} rel={by_label_rel.get(lab, 0)}"
-            for lab in ["TN", "FR", "DE", "LI"]
+            for lab in ["TN", "FR", "GR", "LI"]
             if (by_label_scraped.get(lab, 0) or by_label_new.get(lab, 0) or by_label_rel.get(lab, 0))
         )
 
@@ -314,6 +332,7 @@ def main() -> int:
         if args.sheet_id:
             scfg = SheetsConfig(sheet_id=args.sheet_id, tab=args.sheet_tab, account=args.sheet_account)
             ensure_jobs_header(scfg)
+            # Jobs already carry per-geo source labels (e.g. 'linkedin TN').
             append_jobs(scfg, relevant_new, date_label=today_label)
 
         if args.notify and relevant_new:

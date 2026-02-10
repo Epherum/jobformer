@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import csv
 import json
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List
+
+from .gog import run_gog
 
 
 @dataclass
@@ -16,9 +17,7 @@ class AllJobsSheetConfig:
 
 
 def _run_gog(args: List[str]) -> None:
-    proc = subprocess.run(args, capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError(f"gog failed: {' '.join(args)}\n{proc.stderr}\n{proc.stdout}")
+    run_gog(args, check=True)
 
 
 def clear_tab(cfg: AllJobsSheetConfig) -> None:

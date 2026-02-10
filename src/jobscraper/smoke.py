@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple
+
+from .gog import run_gog
 
 import requests
 
@@ -21,7 +22,7 @@ class CheckResult:
 
 
 def _run_gog(args: List[str]) -> Tuple[int, str]:
-    p = subprocess.run(args, capture_output=True, text=True)
+    p = run_gog(args, check=False)
     out = (p.stdout or "") + ("\n" + p.stderr if p.stderr else "")
     return p.returncode, out.strip()
 
