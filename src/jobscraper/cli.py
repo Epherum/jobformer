@@ -56,8 +56,6 @@ SUSPICIOUS_ZERO_SCRAPE = {
     # These sources almost always return >0 scraped when healthy.
     # If they return 0, it's often a parsing/layout change, blocking, or network issue.
     "keejob",
-    "welcometothejungle",
-    "remoteok",
     "tanitjobs",
     "aneti",
     "linkedin",
@@ -179,6 +177,7 @@ class DashboardState:
     score_scored: int = 0
     score_target: int = 0
     last_results: List[Tuple[str, str, str]] = field(default_factory=list)
+    recent_cycles: List[dict] = field(default_factory=list)
 
 
 def _shorten(text: str, max_len: int = 64) -> str:
@@ -329,7 +328,7 @@ def _refresh_dashboard_layout(layout: Layout, tasks: List[Task], now_ts: float, 
     )
     layout["header"].update(Panel(header, title="JobScraper", padding=(0, 1)))
 
-    recent = Table(expand=True, show_header=True)
+    recent = Table(expand=True, show_header=True, show_lines=True, pad_edge=False)
     recent.add_column("Task", no_wrap=True)
     recent.add_column("Exit", width=6, justify="right")
     recent.add_column("Summary")
@@ -342,7 +341,29 @@ def _refresh_dashboard_layout(layout: Layout, tasks: List[Task], now_ts: float, 
         else:
             code_cell = Text(code_txt, style="red")
         recent.add_row(name, code_cell, _format_recent_summary(summary))
-    layout["right"].update(Panel(recent, title="Recent results", padding=(0, 1)))
+    
+    # Cycle rollups (last 3): total scraped/new/relevant across source runs.
+    cycles = Table.grid(expand=True)
+    cycles.add_column()
+    cycles.add_row(Text("Recent cycles (scr/new/rel):", style="dim"))
+    if state.recent_cycles:
+        cyc_tbl = Table(show_header=True, header_style="bold", expand=True, pad_edge=False)
+        cyc_tbl.add_column("#", width=3, justify="right")
+        cyc_tbl.add_column("scr", justify="right")
+        cyc_tbl.add_column("new", justify="right")
+        cyc_tbl.add_column("rel", justify="right")
+        for c in state.recent_cycles[-3:]:
+            cyc_tbl.add_row(
+                str(c.get("cycle", "")),
+                str(c.get("scraped", 0)),
+                str(c.get("new", 0)),
+                str(c.get("relevant", 0)),
+            )
+        cycles.add_row(cyc_tbl)
+    else:
+        cycles.add_row(Text("(no cycles yet)", style="dim"))
+
+    layout["right"].update(Panel(Group(recent, Text(""), cycles), title="Recent results", padding=(0, 1)))
 
     footer = Text()
     footer.append("Phase: ", style="dim")
@@ -473,7 +494,7 @@ Start-Process $Chrome -ArgumentList @(
 
     # One unified cycle. Tiers are just implementation difficulty.
     # Tier-1 sources are server-side; Tier-2 are CDP-based (Windows Chrome).
-    sources = ["keejob", "welcometothejungle", "remoteok", "tanitjobs", "aneti"]
+    sources = ["keejob", "tanitjobs", "aneti"]
 
     cdp = cfg.cdp_url
 
@@ -714,6 +735,28 @@ Start-Process $Chrome -ArgumentList @(
             cycle_end = time.time()
             for t in tasks:
                 t.last_run_ts = cycle_end
+
+            # Store cycle rollup stats for the UI (last 3 cycles).
+            scraped_total = 0
+            new_total = 0
+            relevant_total = 0
+            for t in tasks:
+                m = STAT_SUMMARY_RE.search(t.last_summary or "")
+                if not m:
+                    continue
+                scraped_total += int(m.group("scraped"))
+                new_total += int(m.group("new"))
+                relevant_total += int(m.group("relevant"))
+
+            state.recent_cycles.append(
+                {
+                    "cycle": state.cycle_no,
+                    "scraped": scraped_total,
+                    "new": new_total,
+                    "relevant": relevant_total,
+                }
+            )
+            state.recent_cycles = state.recent_cycles[-3:]
 
             # Extract job text into cache.
             state.phase = "Extract text (cache)"
