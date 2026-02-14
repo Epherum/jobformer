@@ -40,6 +40,17 @@ def _run_self(args: list[str]) -> int:
     return int(proc.returncode or 0)
 
 
+def _load_cfg_and_chdir():
+    from .config import load_config
+
+    cfg = load_config()
+    try:
+        os.chdir(cfg.base_dir)
+    except Exception:
+        pass
+    return cfg
+
+
 DEFAULT_SHEET_ID = ""  # pass explicitly
 DEFAULT_LOG = Path("data/run_log.csv")
 
@@ -407,10 +418,14 @@ def _refresh_dashboard_layout(layout: Layout, tasks: List[Task], now_ts: float, 
 
 @app.command()
 def start() -> None:
-    """Interactive menu for common workflows.
+    """Interactive start menu (arrow keys + Enter).
 
-    This is a convenience wrapper so you don't have to memorize subcommands.
+    Similar to Clawdbot onboarding: use ↑/↓ and Enter to run an action.
+    Falls back to a numbered prompt if not running in a real TTY.
     """
+
+    # Ensure relative paths work even when running jobformer from any directory.
+    _load_cfg_and_chdir()
 
     menu = [
         ("Dashboard (continuous)", ["dashboard"]),
@@ -426,18 +441,34 @@ def start() -> None:
         ("Quit", []),
     ]
 
-    table = Table(title="jobformer start", show_header=True, header_style="bold")
-    table.add_column("#", width=3, justify="right")
-    table.add_column("Action")
-    for i, (label, _) in enumerate(menu, start=1):
-        table.add_row(str(i), label)
+    labels = [m[0] for m in menu]
 
-    console.print(table)
+    try:
+        import questionary
 
-    choice = Prompt.ask("Select", choices=[str(i) for i in range(1, len(menu) + 1)], default="1")
-    idx = int(choice) - 1
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            choice = questionary.select(
+                "jobformer start",
+                choices=labels,
+                use_shortcuts=True,
+            ).ask()
+            if choice is None:
+                return
+            idx = labels.index(choice)
+        else:
+            raise RuntimeError("not a tty")
+    except Exception:
+        # Fallback: numbered menu
+        table = Table(title="jobformer start", show_header=True, header_style="bold")
+        table.add_column("#", width=3, justify="right")
+        table.add_column("Action")
+        for i, (label, _) in enumerate(menu, start=1):
+            table.add_row(str(i), label)
+        console.print(table)
+        choice2 = Prompt.ask("Select", choices=[str(i) for i in range(1, len(menu) + 1)], default="1")
+        idx = int(choice2) - 1
+
     _, args = menu[idx]
-
     if not args:
         return
 
@@ -448,10 +479,9 @@ def start() -> None:
 @app.command()
 def doctor() -> None:
     """Best-effort environment check for day-to-day reliability."""
-    from .config import load_config
     from .smoke import smoke_checks
 
-    cfg = load_config()
+    cfg = _load_cfg_and_chdir()
     results = smoke_checks(cfg)
 
     bad = 0
@@ -484,10 +514,10 @@ def dashboard(
     - Pass --show-windows-snippet if you need the PowerShell helper to start CDP Chrome.
     """
 
-    from .config import AppConfig, load_config
+    from .config import AppConfig
     from .smoke import smoke_checks
 
-    cfg = load_config()
+    cfg = _load_cfg_and_chdir()
 
     # Resolve effective config (CLI overrides > env/config file).
     sheet_id = sheet_id or cfg.sheet_id
@@ -1024,10 +1054,9 @@ Start-Process $Chrome -ArgumentList @(
 @app.command()
 def smoke() -> None:
     """Quick dependency check: SQLite, CDP, Pushover config, Sheets access."""
-    from .config import load_config
     from .smoke import smoke_checks
 
-    cfg = load_config()
+    cfg = _load_cfg_and_chdir()
     results = smoke_checks(cfg)
 
     bad = 0
@@ -1047,10 +1076,9 @@ def transfer_today(
     to_tab: str = typer.Option("", help="Destination tab (your workflow + dropdown)."),
 ) -> None:
     """Move all rows from Jobs_Today into Jobs, then clear Jobs_Today."""
-    from .config import load_config
     from .transfer_today import TransferConfig, transfer_today
 
-    cfg = load_config()
+    cfg = _load_cfg_and_chdir()
     sheet_id = sheet_id or cfg.sheet_id
     from_tab = from_tab or cfg.jobs_today_tab
     to_tab = to_tab or cfg.jobs_tab
@@ -1074,13 +1102,12 @@ def score_today(
     update_sheet: bool = typer.Option(True, "--update-sheet/--no-update-sheet", help="Update Jobs_Today with score columns (I:J)."),
 ) -> None:
     """Score recent relevant jobs from the DB and optionally update Jobs_Today (I:J)."""
-    from .config import load_config
     from .job_scoring import score_recent_jobs
     from .job_scoring_sheet import score_unscored_sheet_rows
     from .llm_score import DEFAULT_MODEL
     from .sheets_sync import SheetsConfig
 
-    cfg = load_config()
+    cfg = _load_cfg_and_chdir()
     sheet_id = sheet_id or cfg.sheet_id
     sheet_tab = sheet_tab or cfg.jobs_today_tab
 
@@ -1135,11 +1162,10 @@ def extract_text(
     verbose: bool = typer.Option(False, help="Print a short per-URL result line."),
 ) -> None:
     """Extract job page text into SQLite cache (job_text_cache)."""
-    from .config import load_config
     from .text_extraction import extract_text_for_sheet
     from .sheets_sync import SheetsConfig
 
-    cfg = load_config()
+    cfg = _load_cfg_and_chdir()
     sheet_id = sheet_id or cfg.sheet_id
     sheet_tab = sheet_tab or cfg.jobs_today_tab
 
@@ -1173,12 +1199,11 @@ def score_cached(
     extract_missing: bool = typer.Option(False, help="Attempt text extraction for missing cache entries."),
 ) -> None:
     """Score Jobs_Today rows using cached job text, and update columns I:J."""
-    from .config import load_config
     from .job_scoring_cached import score_unscored_sheet_rows_from_cache
     from .llm_score import DEFAULT_MODEL
     from .sheets_sync import SheetsConfig
 
-    cfg = load_config()
+    cfg = _load_cfg_and_chdir()
     sheet_id = sheet_id or cfg.sheet_id
     sheet_tab = sheet_tab or cfg.jobs_today_tab
 
@@ -1214,12 +1239,11 @@ def score_unscored(
 ) -> None:
     """Score all unscored rows currently present in Jobs_Today (loop in batches)."""
 
-    from .config import load_config
     from .llm_score import DEFAULT_MODEL
     from .score_unscored_sheet import score_all_unscored_sheet_rows
     from .sheets_sync import SheetsConfig
 
-    cfg = load_config()
+    cfg = _load_cfg_and_chdir()
     sheet_id = sheet_id or cfg.sheet_id
     sheet_tab = sheet_tab or cfg.jobs_today_tab
 
@@ -1253,11 +1277,10 @@ def push_all_jobs(
 
     This was removed from the automatic dashboard pipeline because it can be slow/noisy.
     """
-    from .config import load_config
     from .export_all_jobs import ExportConfig, export_all_jobs_csv
     from .sheets_all_jobs import AllJobsSheetConfig, write_all_jobs_csv_to_sheet
 
-    cfg = load_config()
+    cfg = _load_cfg_and_chdir()
     sheet_id = sheet_id or cfg.sheet_id
     tab = tab or cfg.all_jobs_tab
 
@@ -1306,14 +1329,13 @@ def score_open_tabs(
 
     import os
 
-    from .config import load_config
     from .cdp_open_tabs import extract_text_from_open_tabs, open_urls_in_cdp
     from .job_text_cache_db import JobTextCacheDB
     from .llm_score import DEFAULT_MODEL, score_job_with_ollama
     from .sheets_sync import SheetsConfig, _get_sheet_rows, update_job_scores
     from .url_canon import canonicalize_url
 
-    cfg = load_config()
+    cfg = _load_cfg_and_chdir()
     sheet_id = sheet_id or cfg.sheet_id
     sheet_tab = sheet_tab or cfg.jobs_today_tab
 

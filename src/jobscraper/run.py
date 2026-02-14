@@ -28,7 +28,11 @@ def main() -> int:
     try:
         from .config import load_config
 
-        load_config()
+        cfg = load_config()
+        try:
+            os.chdir(cfg.base_dir)
+        except Exception:
+            pass
     except Exception:
         pass
 
