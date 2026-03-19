@@ -52,7 +52,7 @@ class AppConfig:
 
     # Default CDP URL from WSL -> Windows host.
     # Note: if Chrome binds only to 127.0.0.1 on Windows, use a portproxy rule.
-    cdp_url: str = "http://172.25.192.1:9224"
+    cdp_url: str = "http://172.21.160.1:9330"
 
     interval_min: int = 20
 

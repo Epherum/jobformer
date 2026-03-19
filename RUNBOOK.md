@@ -14,7 +14,7 @@ Checks:
      if (!(Test-Path $Chrome)) { $Chrome = "$env:ProgramFiles(x86)\Google\Chrome\Application\chrome.exe" }
      $UserData = "$env:LOCALAPPDATA\JobScraperChrome"
      Start-Process $Chrome -ArgumentList @(
-       "--remote-debugging-port=9224",
+       "--remote-debugging-port=9330",
        "--user-data-dir=$UserData",
        "https://www.tanitjobs.com/jobs/",
        "https://www.emploi.nat.tn/fo/Fr/global.php?page=146&=true&FormLinks_Sorting=7&FormLinks_Sorted=7"
@@ -22,7 +22,7 @@ Checks:
      ```
 2. **Verify CDP from WSL/Linux:**
    ```bash
-   curl http://172.25.192.1:9224/json/version
+   curl http://172.21.160.1:9330/json/version
    ```
    - If this fails, Chrome is not reachable or the port proxy is missing.
 3. **If you recently closed Chrome**, restart with the CDP flags above.

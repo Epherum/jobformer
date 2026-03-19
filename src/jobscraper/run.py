@@ -78,7 +78,7 @@ def main() -> int:
     if args.source == "tanitjobs":
         # Prefer CDP-based scrape (Cloudflare-friendly) if available.
         # Set CDP_URL env var for dashboard runs.
-        cdp_url = os.getenv("CDP_URL", "http://172.25.192.1:9223").strip() or None
+        cdp_url = os.getenv("CDP_URL", "http://172.21.160.1:9330").strip() or None
         url = args.tanitjobs_url or "https://www.tanitjobs.com/jobs/"
 
         page_jobs, reason = fetch_first_page_jobs(
@@ -227,7 +227,7 @@ def main() -> int:
 
     if args.source == "aneti":
         # CDP-only: ANETI blocks our server IP, so we use your Windows Chrome session.
-        cdp_url = os.getenv("CDP_URL", "http://172.25.192.1:9223").strip() or "http://172.25.192.1:9223"
+        cdp_url = os.getenv("CDP_URL", "http://172.21.160.1:9330").strip() or "http://172.21.160.1:9330"
         cfg = AnetiConfig(cdp_url=cdp_url, max_offers=25)
         jobs, reason = scrape_aneti(cfg=cfg)
         if reason.startswith("cdp_error"):
@@ -248,7 +248,7 @@ def main() -> int:
 
     if args.source == "linkedin":
         # CDP-only: use your logged-in Windows Chrome.
-        cdp_url = os.getenv("CDP_URL", "http://172.25.192.1:9223").strip() or "http://172.25.192.1:9223"
+        cdp_url = os.getenv("CDP_URL", "http://172.21.160.1:9330").strip() or "http://172.21.160.1:9330"
         # Allow multiple LinkedIn searches:
         # - CLI: --linkedin-url runs a single URL
         # - env: LINKEDIN_URLS can contain newline-separated or comma-separated URLs

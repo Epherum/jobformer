@@ -270,7 +270,7 @@ def run_catchup(cfg: CatchupConfig) -> Tuple[int, int, int, List[Job]]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--cdp", required=True, help="CDP url, e.g. http://172.25.192.1:9223")
+    ap.add_argument("--cdp", required=True, help="CDP url, e.g. http://172.21.160.1:9330")
     ap.add_argument("--days", type=int, default=3)
     ap.add_argument("--max-pages", type=int, default=30)
     ap.add_argument("--start-url", default="https://www.tanitjobs.com/jobs/")

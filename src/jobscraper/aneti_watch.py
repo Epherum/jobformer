@@ -22,7 +22,7 @@ def save_state(path: Path, state: dict) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--cdp", required=True, help="CDP url, e.g. http://172.25.192.1:9223")
+    ap.add_argument("--cdp", required=True, help="CDP url, e.g. http://172.21.160.1:9330")
     ap.add_argument("--state", default="data/aneti_state.json")
     ap.add_argument("--max-offers", type=int, default=50, help="Safety cap. Still only first page.")
     args = ap.parse_args()

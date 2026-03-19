@@ -73,7 +73,7 @@ Edit `data/config.env`:
 Required:
 - `SHEET_ID=...`
 - `SHEET_ACCOUNT=...` (the Google account that `gog` is authenticated for)
-- `CDP_URL=http://172.25.192.1:9224` (WSL -> Windows host CDP endpoint)
+- `CDP_URL=http://172.21.160.1:9330` (WSL -> Windows host CDP endpoint)
 
 Optional:
 - `LINKEDIN_URLS=...` (comma-separated)
@@ -100,13 +100,13 @@ This repo ships two PowerShell helpers in `windows/`:
 - `windows/start_job_scraper_chrome_minimized.ps1`
 
 Run one of them on Windows. It launches Chrome with:
-- `--remote-debugging-port=9224`
+- `--remote-debugging-port=9330`
 - a dedicated user-data-dir (`%LOCALAPPDATA%\JobScraperChrome`)
 
 Then set in `data/config.env`:
 
 ```env
-CDP_URL=http://172.25.192.1:9224
+CDP_URL=http://172.21.160.1:9330
 ```
 
 Notes:
@@ -211,9 +211,9 @@ jobformer push-all-jobs
 ## Troubleshooting
 
 ### CDP not reachable
-- Ensure Chrome is running with `--remote-debugging-port=9224`
-- From WSL, the Windows host is typically the default gateway (example `172.25.192.1`).
-- Confirm `http://172.25.192.1:9224/json/version` is reachable from WSL.
+- Ensure Chrome is running with `--remote-debugging-port=9330`
+- From WSL, the Windows host is typically the default gateway (example `172.21.160.1`).
+- Confirm `http://172.21.160.1:9330/json/version` is reachable from WSL.
 
 ### Tanitjobs redirects change the URL
 Tanitjobs can redirect short URLs like `/job/<id>/` to a slug URL.
