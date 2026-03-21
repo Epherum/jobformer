@@ -1,229 +1,452 @@
 # jobformer
 
-Personal job scraper + lightweight workflow helper.
+Job scraping workflow for Wassim.
 
-It is designed to:
-- scrape multiple job sources into a local SQLite DB
-- append only *relevant* jobs into a daily inbox tab (`Jobs_Today`) in Google Sheets
-- score those inbox rows with a local LLM (llama.cpp local model) and write back a score + short reason
-- let you transfer the inbox into your main workflow tab (`Jobs`)
+It scrapes multiple sources into SQLite, routes relevant jobs into Google Sheets, scores them with a local **llama.cpp** model, and sends notifications.
 
-## What you get
+Current production flow:
+- **Keejob**: scrape + structured detail extraction
+- **Tanitjobs**: scrape + same-run rich card text capture
+- **LinkedIn**: scrape via logged-in Chrome over CDP
+- **Scoring**: local **llama.cpp** OpenAI-compatible server on `127.0.0.1:8080`
+- **Sheets**:
+  - `Sales_Today`
+  - `Tech_Today`
+  - `Jobs`
 
-Local files:
-- SQLite DB: `data/jobs.sqlite3`
-- Run log: `data/run_log.csv`
+## What the app does
 
-Google Sheets tabs:
-- `Jobs_Today`: daily inbox (append-only)
-- `Jobs`: your workflow tab (editable)
-- `All jobs`: optional, full export (manual command)
+Per dashboard cycle:
+1. Scrape sources
+2. Route relevant jobs into `Sales_Today` / `Tech_Today`
+3. Put **oversenior** jobs directly into `Jobs`
+4. Extract/fill text cache
+5. Score jobs with **llama.cpp**
+6. Send notifications:
+   - hot jobs
+   - Tanitjobs new-post notification
+   - quiet issues notification
 
-## Quick start (Linux/WSL)
+## Important behavior
 
-### 1) Install
+- **llama.cpp only**. No Ollama.
+- Oversenior jobs are **not sent to the LLM**.
+- Oversenior jobs get score `0` and are routed straight to `Jobs`.
+- Tanitjobs new jobs always get their own separate notification regardless of score.
+- Hot job notifications show:
+  - `score | source | reason`
 
-This repo supports both a local venv and pipx.
+## Repo layout
 
-#### Option A: pipx (recommended)
+Important files:
+- `data/jobs.sqlite3` → main database
+- `data/run_log.csv` → dashboard/source run log
+- `data/config.env` → local runtime config
+- `data/pushover.env` → Pushover credentials
+- `data/llama_server.log` → llama.cpp server log when auto-started by dashboard
+
+## Requirements
+
+- Python 3.10+
+- Linux / WSL2
+- Windows Chrome available for CDP browsing
+- `gog` CLI authenticated for Google Sheets
+- local **llama.cpp** build with `llama-server`
+- model file present locally
+
+## Fresh setup from scratch
+
+This is the part to follow after a PC reset.
+
+---
+
+## 1) Clone the repo
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y pipx
-pipx ensurepath
-
-# From a cloned repo
-pipx install /path/to/job-scraper
+git clone https://github.com/Epherum/jobformer.git
+cd jobformer
 ```
 
-You should now have a global `jobformer` command:
+## 2) Create the Python environment
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install -e .
+python -m playwright install chromium
+```
+
+You should now be able to run:
+
+```bash
+source .venv/bin/activate
 jobformer --help
 ```
 
-#### Option B: local venv
+## 3) Make the global terminal launcher work
+
+If you want `jobformer ...` to work from any terminal, create:
 
 ```bash
-cd job-scraper
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-pip install -e .
+mkdir -p ~/.local/bin
+cat > ~/.local/bin/jobformer <<'SH'
+#!/usr/bin/env bash
+set -e
+cd /home/wassim/jobformer
+if [ -z "$GOG_KEYRING_PASSWORD" ] && [ -f /home/wassim/.config/gog/keyring_password ]; then
+  export GOG_KEYRING_PASSWORD="$(cat /home/wassim/.config/gog/keyring_password)"
+fi
+exec /home/wassim/jobformer/.venv/bin/jobformer "$@"
+SH
+chmod +x ~/.local/bin/jobformer
 ```
 
-### 2) Playwright browser (required)
+Make sure `~/.local/bin` is in your PATH.
 
-We use Playwright for CDP (Chrome remote debugging) navigation/extraction.
+Test:
 
 ```bash
-python3 -m playwright install chromium
+jobformer --help
+jobformer start
 ```
 
-### 3) Config
+## 4) Configure Google Sheets access
 
-Create `data/config.env` (copy from example):
+This project uses `gog`.
+
+You need:
+- `gog` installed
+- the correct Google account authenticated
+- the keyring password available non-interactively
+
+Store the password in:
 
 ```bash
-cp data/config.env.example data/config.env
+mkdir -p ~/.config/gog
+printf '%s\n' 'YOUR_KEYRING_PASSWORD' > ~/.config/gog/keyring_password
+chmod 600 ~/.config/gog/keyring_password
 ```
 
-Edit `data/config.env`:
-
-Required:
-- `SHEET_ID=...`
-- `SHEET_ACCOUNT=...` (the Google account that `gog` is authenticated for)
-- `CDP_URL=http://172.21.160.1:9330` (WSL -> Windows host CDP endpoint)
-
-Optional:
-- `LINKEDIN_URLS=...` (comma-separated)
-- `INTERVAL_MIN=20`
-- `TEXT_FETCH_MAX_JOBS=200`
-
-### 4) Google auth (gog)
-
-This project uses the `gog` CLI for Google Sheets access.
-Make sure the agent user is authenticated for the account in `SHEET_ACCOUNT`.
-
-If Sheets calls fail, run a minimal test:
+Test that Sheets access works later with:
 
 ```bash
 jobformer smoke
 ```
 
-## Windows: start Chrome in CDP mode
+## 5) Build or install llama.cpp
 
-The simplest reliable approach is: run a dedicated Chrome profile with remote debugging enabled.
+Expected server binary:
 
-This repo ships two PowerShell helpers in `windows/`:
-- `windows/start_job_scraper_chrome.ps1`
-- `windows/start_job_scraper_chrome_minimized.ps1`
+```bash
+/home/wassim/llama.cpp/build/bin/llama-server
+```
 
-Run one of them on Windows. It launches Chrome with:
-- `--remote-debugging-port=9330`
-- a dedicated user-data-dir (`%LOCALAPPDATA%\JobScraperChrome`)
+If needed:
 
-Then set in `data/config.env`:
+```bash
+git clone https://github.com/ggml-org/llama.cpp.git ~/llama.cpp
+cd ~/llama.cpp
+cmake -B build
+cmake --build build -j
+```
+
+Expected model path right now:
+
+```bash
+/home/wassim/models/Qwen2.5-7B-Instruct-Q4_K_M.gguf
+```
+
+## 6) Configure `data/config.env`
+
+Use this shape:
 
 ```env
+SHEET_ID=YOUR_SHEET_ID
+SHEET_ACCOUNT=wassimfekih2@gmail.com
+
+JOBS_TAB=Jobs
+JOBS_TODAY_TAB=Jobs_Today
+ALL_JOBS_TAB=Jobs
+SALES_TODAY_TAB=Sales_Today
+TECH_TODAY_TAB=Tech_Today
+
 CDP_URL=http://172.21.160.1:9330
+
+LINKEDIN_URL=https://www.linkedin.com/jobs/search/?currentJobId=4357425094&f_TPR=r7200&geoId=102134353&sortBy=DD
+LINKEDIN_URLS=https://www.linkedin.com/jobs/search/?currentJobId=4357425094&f_TPR=r7200&geoId=102134353&sortBy=DD,https://www.linkedin.com/jobs/search/?geoId=105015875&f_TPR=r7200&sortBy=DD&f_WT=2,https://www.linkedin.com/jobs/search/?geoId=101282230&f_TPR=r7200&sortBy=DD&f_WT=2,https://www.linkedin.com/jobs/search/?location=Middle%20East&f_TPR=r7200&sortBy=DD&region=ME&f_WT=2
+
+INTERVAL_MIN=20
+TEXT_FETCH_DELAY_NORMAL_S=10
+TEXT_FETCH_DELAY_CF_S=60
+TEXT_FETCH_MAX_JOBS=200
+
+LLM_BACKEND=llama_cpp
+LLAMA_CPP_URL=http://127.0.0.1:8080
+LLM_MODEL=/home/wassim/models/Qwen2.5-7B-Instruct-Q4_K_M.gguf
 ```
 
 Notes:
-- Log into LinkedIn/Tanitjobs in that Chrome window.
-- Keep that Chrome running while the scraper runs.
+- `ALL_JOBS_TAB=Jobs` is correct for the current sheet
+- the app still has a legacy `JOBS_TODAY_TAB`, but production routing now uses `Sales_Today` and `Tech_Today`
 
-## Google Sheet schema
+## 7) Set up Pushover
 
-Tabs `Jobs_Today` and `Jobs` should have these columns:
+Create:
 
-A: source
-B: labels
-C: title
-D: company
-E: location
-F: date_added
-G: url
-H: decision
-I: score (LLM score)
-J: reason (short justification)
+```bash
+mkdir -p data
+cat > data/pushover.env <<'EOF'
+PUSHOVER_USER_KEY=YOUR_USER_KEY
+PUSHOVER_APP_TOKEN=YOUR_APP_TOKEN
+EOF
+```
 
-`Jobs_Today` is append-only. `Jobs` is your workflow.
+Current notification behavior:
+- hot jobs: high priority
+- Tanitjobs new jobs: separate notification
+- issues: separate low-priority `sound=none`
 
-Recommended dropdown for `Jobs!H:H` (decision):
-- NEW
-- SAVED
-- APPLIED
-- SKIPPED_NOT_A_FIT
-- REJECTED
-- ARCHIVED
+## 8) Start Windows Chrome in CDP mode
 
-## Main commands
+Jobformer expects a Chrome instance on Windows with remote debugging enabled.
 
-### `jobformer doctor`
-Best-effort environment check for day-to-day reliability.
+Typical command on Windows PowerShell:
 
-### `jobformer smoke`
-Checks: SQLite, CDP connectivity, Pushover config (if enabled), Sheets access.
+```powershell
+$Chrome = "$env:ProgramFiles\Google\Chrome\Application\chrome.exe"
+if (!(Test-Path $Chrome)) { $Chrome = "$env:ProgramFiles(x86)\Google\Chrome\Application\chrome.exe" }
+$UserData = "$env:LOCALAPPDATA\JobScraperChrome"
+Start-Process $Chrome -ArgumentList @(
+  "--remote-debugging-port=9330",
+  "--user-data-dir=$UserData"
+)
+```
 
-### `jobformer dashboard`
-Runs a full cycle loop every `INTERVAL_MIN` minutes:
-- scrape sources
-- append relevant rows to `Jobs_Today`
-- extract text + score cached rows (incremental progress in the dashboard)
-- send a single notification per cycle (if configured)
+Then in that Chrome profile:
+- log into **LinkedIn**
+- open **Tanitjobs** once if needed
+- keep that browser open while Jobformer runs
 
-One-shot:
+From WSL, this should resolve via:
+- `CDP_URL=http://172.21.160.1:9330`
+
+Quick check:
+
+```bash
+curl http://172.21.160.1:9330/json/version
+```
+
+## 9) Run checks
+
+```bash
+jobformer smoke
+jobformer doctor
+```
+
+If both look good, run one cycle:
 
 ```bash
 jobformer dashboard --once
 ```
 
-### `jobformer transfer-today`
-Moves all rows from `Jobs_Today` into `Jobs`, then clears `Jobs_Today`.
+If that works, run the continuous dashboard:
 
-### Scoring and extraction
+```bash
+jobformer dashboard
+```
 
-Extract page text into cache:
+---
+
+## What to run after every reboot
+
+From scratch after boot:
+
+### A. Start Windows Chrome with CDP
+Use the PowerShell snippet above.
+
+### B. Make sure Chrome is logged in
+Especially for:
+- LinkedIn
+- Tanitjobs if needed
+
+### C. Open terminal in WSL
+Then run:
+
+```bash
+jobformer smoke
+```
+
+### D. Start the app
+Either:
+
+```bash
+jobformer dashboard
+```
+
+or use the menu:
+
+```bash
+jobformer start
+```
+
+Current menu is intentionally small:
+1. Dashboard (continuous)
+2. Dashboard (once)
+3. Transfer Sales_Today + Tech_Today → Jobs
+4. Smoke test
+
+## Sheet structure
+
+Expected tabs:
+- `Sales_Today`
+- `Tech_Today`
+- `Jobs`
+
+Expected columns A:J:
+- A `source`
+- B `labels`
+- C `title`
+- D `company`
+- E `location`
+- F `date_added`
+- G `url`
+- H `decision`
+- I `score`
+- J `reason`
+
+## Source-specific notes
+
+### Keejob
+- detail page fetched over HTTP
+- structured fields extracted for scoring
+- languages are preserved in text when available
+
+### Tanitjobs
+- scraped from listing cards via CDP
+- rich card text is captured **during the scrape itself**
+- no second discovery pass needed to get preview text
+- all new Tanitjobs posts notify separately regardless of score
+
+### LinkedIn
+- scraped via logged-in Chrome over CDP
+- uses search result cards first
+- full description text is fetched later from the job detail page for scoring
+- this source is the most sensitive to flaky network and CDP/browser state
+
+## Commands
+
+### Dashboard
+
+Run continuously:
+
+```bash
+jobformer dashboard
+```
+
+Run once:
+
+```bash
+jobformer dashboard --once
+```
+
+### Start menu
+
+```bash
+jobformer start
+```
+
+### Transfer today tabs into Jobs
+
+```bash
+jobformer transfer-today
+```
+
+### Smoke test
+
+```bash
+jobformer smoke
+```
+
+### Manual scoring/debug commands
 
 ```bash
 jobformer extract-text --max-jobs 200
-```
-
-Score from cached text:
-
-```bash
 jobformer score-cached --max-jobs 200 --concurrency 1
-```
-
-Score recent jobs (alternative path):
-
-```bash
-jobformer score-today --since-hours 6
-```
-
-### Manual Cloudflare workaround (Tanitjobs and similar)
-
-Some sites (notably Tanitjobs job detail pages) can trigger Cloudflare challenges.
-When that happens, the fastest workflow is:
-
-1) Open the blocked job URLs manually in the CDP Chrome window (so Cloudflare clears).
-2) Run:
-
-```bash
-jobformer score-open-tabs
-```
-
-This command:
-- reads the currently open CDP tabs (no navigation)
-- extracts text from those already-open pages
-- writes cache entries
-- scores any matching unscored `Jobs_Today` rows and updates columns I:J
-
-### Full DB export to `All jobs` (manual)
-
-This is intentionally NOT part of the dashboard pipeline.
-
-```bash
-jobformer push-all-jobs
+jobformer doctor
 ```
 
 ## Troubleshooting
 
+### `jobformer` not found
+Recreate the launcher in `~/.local/bin/jobformer` and ensure `~/.local/bin` is in PATH.
+
+### `gog` asks for password or fails in non-interactive mode
+Make sure this file exists:
+
+```bash
+~/.config/gog/keyring_password
+```
+
+and that the launcher exports it.
+
+### Transfer command says `All jobs!A:J`
+Your config is stale. Fix:
+
+```env
+ALL_JOBS_TAB=Jobs
+```
+
 ### CDP not reachable
-- Ensure Chrome is running with `--remote-debugging-port=9330`
-- From WSL, the Windows host is typically the default gateway (example `172.21.160.1`).
-- Confirm `http://172.21.160.1:9330/json/version` is reachable from WSL.
+Make sure Windows Chrome was started with:
+- `--remote-debugging-port=9330`
 
-### Tanitjobs redirects change the URL
-Tanitjobs can redirect short URLs like `/job/<id>/` to a slug URL.
-We canonicalize both forms to the same `/job/<id>` for matching.
+Then test:
 
-### Dependencies
-- Python >= 3.10
-- Playwright Chromium installed (`python3 -m playwright install chromium`)
-- Required: llama.cpp server running for local LLM scoring
+```bash
+curl http://172.21.160.1:9330/json/version
+```
 
----
+### LinkedIn is flaky
+That is expected sometimes.
 
-If you re-clone from scratch: follow “Quick start”, then run `jobformer doctor` and `jobformer dashboard --once`.
+Current mitigations already in the code:
+- longer timeout
+- navigation retries
+- reuse of existing LinkedIn jobs tab
+- extra readiness waits
+
+### llama.cpp scoring fails
+The dashboard auto-starts llama.cpp for scoring, but if you run manual score commands yourself, make sure the server is available on:
+
+```bash
+http://127.0.0.1:8080
+```
+
+Check:
+
+```bash
+curl http://127.0.0.1:8080/health
+```
+
+## Current workflow summary
+
+- scrape sources
+- route relevant jobs to `Sales_Today` / `Tech_Today`
+- route oversenior jobs directly to `Jobs`
+- cache text
+- score with llama.cpp
+- notify
+- transfer reviewed jobs from today tabs into `Jobs`
+
+If doing a complete reset, the shortest recovery checklist is:
+1. clone repo
+2. create venv and install
+3. install Playwright Chromium
+4. restore `data/config.env`
+5. restore `data/pushover.env`
+6. restore `~/.config/gog/keyring_password`
+7. ensure llama.cpp + model path exist
+8. start Windows Chrome in CDP mode
+9. run `jobformer smoke`
+10. run `jobformer dashboard`

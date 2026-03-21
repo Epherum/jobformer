@@ -50,7 +50,7 @@ class AppConfig:
     jobs_today_tab: str = "Tech_Today"
     sales_today_tab: str = "Sales_Today"
     tech_today_tab: str = "Tech_Today"
-    all_jobs_tab: str = "All jobs"
+    all_jobs_tab: str = "Jobs"
 
     # Default CDP URL from WSL -> Windows host.
     # Note: if Chrome binds only to 127.0.0.1 on Windows, use a portproxy rule.

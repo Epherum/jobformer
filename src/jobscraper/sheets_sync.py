@@ -6,7 +6,7 @@ from typing import List, Sequence
 
 from .gog import run_gog
 from .models import Job
-from .filtering import decision_for_title, match_labels
+from .filtering import decision_for_title, match_labels, DECISION_TOO_SENIOR
 
 
 @dataclass
@@ -37,10 +37,14 @@ def append_jobs(cfg: SheetsConfig, jobs: Sequence[Job], date_label: str) -> None
     _run_gog(["gog","sheets","append",cfg.sheet_id,f"{cfg.tab}!A:J","--account",cfg.account,"--values-json",json.dumps(rows, ensure_ascii=False),"--insert","INSERT_ROWS"])
 
 
-def append_jobs_routed(sheet_id: str, account: str, jobs: Sequence[Job], date_label: str, sales_tab: str, tech_tab: str) -> dict:
+def append_jobs_routed(sheet_id: str, account: str, jobs: Sequence[Job], date_label: str, sales_tab: str, tech_tab: str, jobs_tab: str = "Jobs") -> dict:
     sales_jobs = []
     tech_jobs = []
+    oversenior_jobs = []
     for j in jobs:
+        if decision_for_title(j.title) == DECISION_TOO_SENIOR:
+            oversenior_jobs.append(j)
+            continue
         labels = set(match_labels(j.title))
         if 'SALES' in labels:
             sales_jobs.append(j)
@@ -54,7 +58,11 @@ def append_jobs_routed(sheet_id: str, account: str, jobs: Sequence[Job], date_la
         cfg = SheetsConfig(sheet_id=sheet_id, tab=tech_tab, account=account)
         ensure_jobs_header(cfg)
         append_jobs(cfg, tech_jobs, date_label)
-    return {"sales": len(sales_jobs), "tech": len(tech_jobs)}
+    if oversenior_jobs:
+        cfg = SheetsConfig(sheet_id=sheet_id, tab=jobs_tab, account=account)
+        ensure_jobs_header(cfg)
+        append_jobs(cfg, oversenior_jobs, date_label)
+    return {"sales": len(sales_jobs), "tech": len(tech_jobs), "oversenior": len(oversenior_jobs)}
 
 
 def _get_sheet_rows(cfg: SheetsConfig, range_cols: str = "A:J") -> list[list[str]]:

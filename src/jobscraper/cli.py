@@ -526,14 +526,8 @@ def start() -> None:
     menu = [
         ("Dashboard (continuous)", ["dashboard"]),
         ("Dashboard (once)", ["dashboard", "--once"]),
-        ("Score open tabs (manual Cloudflare workflow)", ["score-open-tabs"]),
-        ("Extract text cache", ["extract-text", "--max-jobs", "200"]),
-        ("Score cached", ["score-cached", "--max-jobs", "200", "--concurrency", "1"]),
-        ("Score today (recent)", ["score-today", "--since-hours", "6"]),
-        ("Transfer Jobs_Today → Jobs", ["transfer-today"]),
+        ("Transfer Sales_Today + Tech_Today → Jobs", ["transfer-today"]),
         ("Smoke test", ["smoke"]),
-        ("Doctor", ["doctor"]),
-        ("Push All jobs sheet", ["push-all-jobs"]),
         ("Quit", []),
     ]
 
@@ -1203,9 +1197,9 @@ def smoke() -> None:
 @app.command()
 def transfer_today(
     sheet_id: str = typer.Argument("", help="Google Sheet ID (or set SHEET_ID in data/config.env)."),
-    to_tab: str = typer.Option("", help="Destination tab (default All jobs)."),
+    to_tab: str = typer.Option("", help="Destination tab (default Jobs)."),
 ) -> None:
-    """Transfer Sales_Today and Tech_Today into All jobs, then clear both source tabs."""
+    """Transfer Sales_Today and Tech_Today into Jobs, then clear both source tabs."""
     from .transfer_today import TransferConfig, transfer_today
 
     cfg = _load_cfg_and_chdir()

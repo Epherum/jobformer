@@ -11,7 +11,7 @@ from .gog import run_gog
 class TransferConfig:
     sheet_id: str
     from_tabs: list[str]
-    to_tab: str = "All jobs"
+    to_tab: str = "Jobs"
     account: str = "wassimfekih2@gmail.com"
     range_cols: str = "A:J"
 
