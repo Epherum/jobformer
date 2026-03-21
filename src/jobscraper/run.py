@@ -133,6 +133,8 @@ def main() -> int:
         relevant_new = [j for j in new_jobs if is_relevant(j.title)]
 
         print(f"tanitjobs: scraped={len(jobs)} new={len(new_jobs)} relevant_new={len(relevant_new)}")
+        for j in new_jobs[:40]:
+            print(f"TANIT_NEW: {j.title} | {j.company} | {j.location} | {j.url}")
         for j in relevant_new[:20]:
             print(f"NEW: {j.title} | {j.url}")
 

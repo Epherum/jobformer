@@ -848,6 +848,7 @@ Start-Process $Chrome -ArgumentList @(
             cycle_start = time.time()
             cycle_lines = []
             cycle_issues = []
+            tanit_new_lines = []
             state.cycle_no += 1
             state.new_relevant = 0
             state.issues = 0
@@ -897,17 +898,18 @@ Start-Process $Chrome -ArgumentList @(
                 for iss in _detect_issues(t, code, out):
                     cycle_issues.append(iss)
 
-                # Collect NEW lines from output (run.py prints NEW: ... | url)
+                # Collect NEW lines from output.
                 for line in (out or "").splitlines():
                     if line.startswith("NEW:"):
                         payload = line[4:].strip()
-                        # run.py prints e.g.:
-                        # - "NEW: title | url"
-                        # - "NEW: title | company | location | url"
-                        # We only want the title to keep notifications short.
                         title_only = payload.split(" | ", 1)[0].strip()
                         if title_only:
                             cycle_lines.append(title_only)
+                    elif line.startswith("TANIT_NEW:"):
+                        payload = line[len("TANIT_NEW:"):].strip()
+                        title_only = payload.split(" | ", 1)[0].strip()
+                        if title_only:
+                            tanit_new_lines.append(title_only)
 
                 state.sources_done += 1
                 state.phase = f"Scrape sources ({state.sources_done}/{state.sources_total})"
@@ -1110,7 +1112,7 @@ Start-Process $Chrome -ArgumentList @(
             notify_task.last_exit = 0
             notify_task.last_summary = "no notification"
             hot_jobs = list(getattr(state, "hot_jobs", []) or [])
-            if hot_jobs or cycle_issues or extract_task.last_exit or score_task.last_exit:
+            if hot_jobs or tanit_new_lines or cycle_issues or extract_task.last_exit or score_task.last_exit:
                 notify_task.last_summary = "sending pushover"
                 _update_live(live_ctx)
 
@@ -1120,7 +1122,7 @@ Start-Process $Chrome -ArgumentList @(
                 if hot_jobs:
                     hot_lines.append("Hot jobs (75+):")
                     for j in hot_jobs[:10]:
-                        hot_lines.append(f"{int(round(float(j.get('score', 0))))}: {j.get('title','')} | {(j.get('reason','') or '')}")
+                        hot_lines.append(f"{int(round(float(j.get('score', 0))))} | {j.get('source','')} | {(j.get('reason','') or '')}")
 
                 uniq = []
                 seen = set()
@@ -1139,6 +1141,12 @@ Start-Process $Chrome -ArgumentList @(
                     if hot_lines:
                         send_summary(title=f"Jobformer: {len(hot_jobs)} hot", lines=hot_lines, priority=1)
                         sent_parts.append(f"{len(hot_jobs)} hot")
+                    if tanit_new_lines:
+                        tanit_lines = ["New Tanitjobs posts:", *tanit_new_lines[:20]]
+                        if len(tanit_new_lines) > 20:
+                            tanit_lines.append("…")
+                        send_summary(title=f"Tanitjobs: {len(tanit_new_lines)} new", lines=tanit_lines, priority=0)
+                        sent_parts.append(f"{len(tanit_new_lines)} tanitjobs")
                     if uniq:
                         issue_lines = ["Issues:", *uniq[:8]]
                         if len(uniq) > 8:

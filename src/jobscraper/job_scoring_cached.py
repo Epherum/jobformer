@@ -16,6 +16,7 @@ from .filtering import decision_for_title, DECISION_TOO_SENIOR
 
 @dataclass(frozen=True)
 class ScoreCandidate:
+    source: str
     title: str
     company: str
     location: str
@@ -83,10 +84,11 @@ def score_unscored_sheet_rows_from_cache(
         if not url or llm_score:
             continue
 
+        source = r[0].strip() if len(r) > 0 else ""
         title = r[2].strip() if len(r) > 2 else ""
         company = r[3].strip() if len(r) > 3 else ""
         location = r[4].strip() if len(r) > 4 else ""
-        candidates.append(ScoreCandidate(title=title, company=company, location=location, url=url))
+        candidates.append(ScoreCandidate(source=source, title=title, company=company, location=location, url=url))
 
     if max_jobs and len(candidates) > max_jobs:
         candidates = candidates[:max_jobs]
@@ -179,7 +181,7 @@ def score_unscored_sheet_rows_from_cache(
                 }
             )
         updated_rows = update_job_scores(sheet_cfg, sheet_updates)
-        hot_jobs = [{"title": next((c.title for c in candidates if c.url == r.url), ""), "url": r.url, "score": r.score, "track": "", "reason": (r.reasons[0] if r.reasons else "")[:180]} for r in results if float(r.score) >= 75]
+        hot_jobs = [{"title": next((c.title for c in candidates if c.url == r.url), ""), "source": next((c.source for c in candidates if c.url == r.url), ""), "url": r.url, "score": r.score, "track": "", "reason": (r.reasons[0] if r.reasons else "")[:180]} for r in results if float(r.score) >= 75]
 
     cache_db.close()
 
