@@ -8,9 +8,10 @@ from typing import Optional
 from .job_scores_db import JobScoresDB
 from .job_text_cache_db import JobTextCacheDB
 from .url_canon import canonicalize_url
-from .llm_score import LLMScore, score_job_with_ollama
+from .llm_score import LLMScore, score_job_with_local_llm
 from .sheets_sync import SheetsConfig, _get_sheet_rows, update_job_scores
 from .text_extraction import extract_text_for_urls
+from .filtering import decision_for_title, DECISION_TOO_SENIOR
 
 
 @dataclass(frozen=True)
@@ -31,9 +32,17 @@ class ScoreResult:
 
 
 def _score_from_text(candidate: ScoreCandidate, text: str, model: str) -> Optional[ScoreResult]:
+    if decision_for_title(candidate.title) == DECISION_TOO_SENIOR:
+        return ScoreResult(
+            url=candidate.url,
+            score=0,
+            decision="no",
+            reasons=["Oversenior role ignored before LLM scoring."],
+            model="rule:oversenior",
+        )
     if not text:
         return None
-    llm: LLMScore = score_job_with_ollama(
+    llm: LLMScore = score_job_with_local_llm(
         title=candidate.title,
         company=candidate.company,
         location=candidate.location,
@@ -157,6 +166,7 @@ def score_unscored_sheet_rows_from_cache(
     scores_db.close()
 
     updated_rows = 0
+    hot_jobs = []
     if results:
         sheet_updates = []
         for r in results:
@@ -169,6 +179,7 @@ def score_unscored_sheet_rows_from_cache(
                 }
             )
         updated_rows = update_job_scores(sheet_cfg, sheet_updates)
+        hot_jobs = [{"title": next((c.title for c in candidates if c.url == r.url), ""), "url": r.url, "score": r.score, "track": "", "reason": (r.reasons[0] if r.reasons else "")[:180]} for r in results if float(r.score) >= 75]
 
     cache_db.close()
 
@@ -178,4 +189,5 @@ def score_unscored_sheet_rows_from_cache(
         "updated_rows": updated_rows,
         "errors": errors,
         "missing": missing,
+        "hot_jobs": hot_jobs,
     }

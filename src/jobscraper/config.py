@@ -47,7 +47,9 @@ class AppConfig:
     sheet_id: str = ""
     sheet_account: str = "wassimfekih2@gmail.com"
     jobs_tab: str = "Jobs"
-    jobs_today_tab: str = "Jobs_Today"
+    jobs_today_tab: str = "Tech_Today"
+    sales_today_tab: str = "Sales_Today"
+    tech_today_tab: str = "Tech_Today"
     all_jobs_tab: str = "All jobs"
 
     # Default CDP URL from WSL -> Windows host.
@@ -103,6 +105,8 @@ def load_config(env_path: Optional[Path] = None) -> AppConfig:
         sheet_account=(os.getenv("SHEET_ACCOUNT") or AppConfig.sheet_account).strip(),
         jobs_tab=(os.getenv("JOBS_TAB") or AppConfig.jobs_tab).strip(),
         jobs_today_tab=(os.getenv("JOBS_TODAY_TAB") or AppConfig.jobs_today_tab).strip(),
+        sales_today_tab=(os.getenv("SALES_TODAY_TAB") or AppConfig.sales_today_tab).strip(),
+        tech_today_tab=(os.getenv("TECH_TODAY_TAB") or AppConfig.tech_today_tab).strip(),
         all_jobs_tab=(os.getenv("ALL_JOBS_TAB") or AppConfig.all_jobs_tab).strip(),
         cdp_url=(os.getenv("CDP_URL") or AppConfig.cdp_url).strip(),
         interval_min=geti("INTERVAL_MIN", AppConfig.interval_min),

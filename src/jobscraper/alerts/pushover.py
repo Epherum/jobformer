@@ -40,6 +40,7 @@ def send(
     url: str = "",
     url_title: str = "",
     priority: int = 0,
+    sound: str = "",
     cfg: Optional[PushoverConfig] = None,
     timeout_s: int = 15,
 ) -> None:
@@ -58,6 +59,8 @@ def send(
         data["url"] = url
     if url_title:
         data["url_title"] = url_title
+    if sound:
+        data["sound"] = sound
 
     resp = requests.post(API_URL, data=data, timeout=timeout_s)
     resp.raise_for_status()
@@ -70,6 +73,8 @@ def send_summary(
     click_url: str = "",
     click_title: str = "Open",
     max_chars: int = 950,
+    priority: int = 0,
+    sound: str = "",
 ) -> None:
     # Pushover message limit is 1024 chars. Keep headroom.
     msg = "\n".join(lines)
@@ -77,4 +82,4 @@ def send_summary(
         # truncate cleanly
         msg = msg[: max_chars - 20].rsplit("\n", 1)[0] + "\n…(truncated)"
 
-    send(title=title, message=msg, url=click_url, url_title=click_title)
+    send(title=title, message=msg, url=click_url, url_title=click_title, priority=priority, sound=sound)

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from .job_scores_db import JobScoresDB
-from .llm_score import LLMScore, score_job_with_ollama
+from .llm_score import LLMScore, score_job_with_local_llm
 from .sheets_sync import SheetsConfig, _get_sheet_rows, update_job_scores
 from .job_scoring import ScoreCandidate, ScoreResult, _score_one
 
@@ -84,6 +84,7 @@ def score_unscored_sheet_rows(
                 "score": r.score,
                 "decision": r.decision,
                 "reasons": (r.reasons[0] if r.reasons else "")[:180],
+                "track": r.track,
             }
         )
 

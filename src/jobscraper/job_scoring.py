@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 from .filtering import is_relevant
 from .job_scores_db import JobScoresDB
-from .llm_score import LLMScore, score_job_with_ollama
+from .llm_score import LLMScore, score_job_with_local_llm
 from .page_fetch import fetch_page_text
 from .cdp_page_fetch import fetch_page_text_via_cdp
 from .sheets_sync import SheetsConfig, _get_sheet_rows, update_job_scores
@@ -89,7 +89,7 @@ def _score_one(candidate: ScoreCandidate, model: str, cdp_url: Optional[str]) ->
             text = fetch_page_text_via_cdp(candidate.url, cdp_url)
     if not text:
         return None
-    llm: LLMScore = score_job_with_ollama(
+    llm: LLMScore = score_job_with_local_llm(
         title=candidate.title,
         company=candidate.company,
         location=candidate.location,

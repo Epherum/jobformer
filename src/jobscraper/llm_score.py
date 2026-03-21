@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, List
@@ -8,8 +9,8 @@ from typing import Any, Dict, List
 import requests
 
 
-DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
-DEFAULT_MODEL = "qwen2.5:7b-instruct"
+DEFAULT_LLAMA_CPP_URL = "http://127.0.0.1:8080"
+DEFAULT_MODEL = "/home/wassim/models/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
 
 
 @dataclass(frozen=True)
@@ -20,22 +21,35 @@ class LLMScore:
     model: str
 
 
+_SALES_RE = re.compile(r"\b(sales|account executive|account manager|business development|bdr|sdr|pre[- ]?sales|solutions? engineer|sales engineer|solution consultant|technical account manager|customer success manager|commercial|vente|technico-commercial|ing[ée]nieur commercial|avant[- ]vente)\b", re.I)
+_ENGLISH_SPEAKER_RE = re.compile(r"\benglish\s+speaker\b|\banglophone\b|\bexcellent\s+english\b|\benglish\b", re.I)
+_SENIOR_RE = re.compile(r"\b(senior|sr\.?|lead|principal|staff|head of|director|directeur|directrice|vp|vice president|chief|manager)\b", re.I)
+_CALL_CENTER_RE = re.compile(r"\b(call center|centre d[' ]appel|t[ée]l[ée]conseiller|t[ée]l[ée]vente|t[ée]l[ée]op[ée]rateur|customer support|service client|r[ée]ceptionniste|charg[ée] client[èe]le)\b", re.I)
+_B2B_RE = re.compile(r"\b(b2b|saas|enterprise|account executive|business development|prospecting|pipeline|crm|quota|closing|demos?|solution)\b", re.I)
+_TECH_RE = re.compile(r"\b(frontend|full.?stack|backend|software|engineer|developer|react|next\.js|typescript|node\.js|postgres|prisma|supabase|docker|data|analytics|ai|ml|machine learning|computer vision|rag|llm|api)\b", re.I)
+_JUNIOR_RE = re.compile(r"\b(junior|jr\.?|entry level|débutant|0-2 years|1-3 years)\b", re.I)
+
+
 def _extract_json(text: str) -> Dict[str, Any]:
     text = (text or "").strip()
     if not text:
         raise ValueError("empty LLM response")
-
     if text.startswith("{") and text.endswith("}"):
         return json.loads(text)
-
-    # Try to extract the first JSON object.
     m = re.search(r"\{.*\}", text, re.S)
     if not m:
         raise ValueError("no JSON object found in LLM response")
     return json.loads(m.group(0))
 
 
-def score_job_with_ollama(
+def _guess_is_sales(title: str, page_text: str) -> bool:
+    hay = f"{title}\n{page_text[:1200]}"
+    return bool(_SALES_RE.search(hay or ""))
+
+
+
+
+def score_job_with_local_llm(
     *,
     title: str,
     company: str,
@@ -45,94 +59,82 @@ def score_job_with_ollama(
     model: str = DEFAULT_MODEL,
     timeout_s: int = 90,
     retries: int = 1,
-    ollama_url: str = DEFAULT_OLLAMA_URL,
 ) -> LLMScore:
-    """Score a job using local Ollama and return strict JSON parsed output.
+    snippet = (page_text or "")[:1800]
+    is_sales = _guess_is_sales(title, page_text)
 
-    retries: number of additional attempts for transient timeouts.
-    """
+    if is_sales:
+        prompt = f"""
+You are scoring ONLY a SALES job for this candidate.
 
-    # Keep prompt short; job pages can be long.
-    snippet = (page_text or "")[:4000]
+Candidate goal for sales track:
+- High-value B2B sales where technical background helps.
+- Best fits: Sales Engineer, Solutions Engineer, Pre-sales, Solution Consultant, Technical Account Manager, Enterprise/SMB Account Executive, Business Development in B2B tech.
+- Strong positive if it is B2B, SaaS, enterprise, pipeline/prospecting/closing, demos, discovery, solution selling.
+- Strong negative if it is call center, telemarketing, customer support disguised as sales, retail counter sales, or low-value phone work.
 
-    prompt = f"""
-You are a strict job screening and ranking assistant.
+Scoring philosophy:
+- A strong B2B tech-adjacent sales role can score 80-95.
+- A generic sales role can be 50-74.
+- A lame call-center style role should be very low.
 
-Candidate profile (the person we are scoring for):
-- Education: Master’s degree in Artificial Intelligence.
-- Target pivots: wants to pivot into higher-value B2B sales while leveraging technical background.
-- Also relevant: software/data/AI engineering roles.
-- Strong interests/keywords (tech track): React, Next.js, TypeScript, Node.js, APIs, PostgreSQL, Prisma, Supabase, Docker/DevOps basics; AI/ML/Computer Vision/RAG/LLMs.
-- Languages: English + French job posts. Handle both.
-
-We have TWO separate tracks. You must pick ONE:
-1) track="sales": high-quality B2B roles where the AI/tech background is an advantage.
-   Target roles: Sales Engineer, Solutions Engineer, Pre-sales, Solution Consultant, Technical Account Manager, Enterprise/SMB Account Executive (B2B SaaS), Business Development in B2B tech.
-   Non-target sales (usually reject): call center / centre d'appel, téléconseiller, télévente, téléopérateur, customer support disguised as sales, retail counter sales.
-
-2) track="tech": hands-on software/data/AI roles.
-   Target roles: Frontend/Fullstack/Backend Engineer, Data Analyst/BI/Analytics Engineer, Data Engineer, ML Engineer/Applied AI/Computer Vision.
-
-Hard rules:
-- Do NOT penalize track="sales" for missing a coding/tech stack.
-- Do NOT reward track="tech" for generic business/sales language.
-- Treat call-center style roles as a strong negative for track="sales". Only consider them if the posting is clearly B2B SaaS with real prospecting/pipeline ownership and a credible path to AE/SE.
-- Prefer roles that are not purely senior leadership unless responsibilities are clearly hands-on.
-- Return ONE short reason line only.
-
-Output format: return ONLY strict JSON (no markdown, no extra text) with keys:
-- track: "sales" | "tech"
+Return ONLY strict JSON with keys:
 - score: number 0-100
 - decision: "yes" | "maybe" | "no"
 - reasons: array with exactly 1 short sentence (max ~160 chars)
-
-Scoring guidelines (calibrate to be useful):
-- decision="yes" (score >= 75): strong fit for the candidate’s goals.
-- decision="maybe" (score 50-74): potentially useful but needs human review.
-- decision="no" (score < 50): low-value, off-target, or dead-end.
-
-How to score track="sales" (0-100):
-+ Strong positives:
-  - Explicit Sales Engineer / Solutions Engineer / Pre-sales / TAM / Solution Consultant.
-  - B2B SaaS / technical product / enterprise customers.
-  - Responsibilities include discovery, demos, solution design, stakeholder management, pipeline/forecast, closing.
-  - Commission/OTE structure, quota-carrying clarity, or strong enablement.
-+ Negatives:
-  - Call-center language (scripts, inbound customer service, telemarketing, high-volume calls).
-  - Pure administrative sales ops ("administration des ventes" / order processing) unless it clearly leads toward AM/AE.
-  - B2C retail.
-
-How to score track="tech" (0-100):
-+ Positives:
-  - JS/TS + React/Next.js + Node/APIs.
-  - PostgreSQL/Prisma/Supabase.
-  - Docker/DevOps.
-  - AI/ML/CV/RAG/LLMs with real responsibilities.
-+ Negatives:
-  - Trades/industrial maintenance/civil engineering/healthcare/etc.
-  - Pure IT support without engineering.
 
 Title: {title}
 Company: {company}
 Location: {location}
 URL: {url}
+Job text:
+{snippet}
+""".strip()
+    else:
+        prompt = f"""
+You are scoring ONLY a TECH job for this candidate.
 
-Job page text (may be long; focus on responsibilities and role type):
+Candidate profile for tech track:
+- Master's in Artificial Intelligence.
+- Best-fit stack: React, Next.js, TypeScript, Node.js, APIs, PostgreSQL, Prisma, Supabase, Docker.
+- Also strong fit: Data, Analytics, AI/ML, Computer Vision, RAG, LLMs.
+
+Scoring philosophy:
+- Junior or close-to-resume roles can score ABOVE 85.
+- A strong close match to the resume/stack should score very high.
+- Appian / low-code / unrelated enterprise tooling can still be technical, but should score lower if not close to the stack.
+- Non-software / non-data / non-AI engineering roles should score low.
+
+Return ONLY strict JSON with keys:
+- score: number 0-100
+- decision: "yes" | "maybe" | "no"
+- reasons: array with exactly 1 short sentence (max ~160 chars)
+
+Title: {title}
+Company: {company}
+Location: {location}
+URL: {url}
+Job text:
 {snippet}
 """.strip()
 
+    backend = (os.getenv("LLM_BACKEND") or "llama_cpp").strip().lower()
+    if backend != "llama_cpp":
+        raise RuntimeError(f"Unsupported LLM_BACKEND={backend}. Use llama_cpp.")
+
+    llama_cpp_url = (os.getenv("LLAMA_CPP_URL") or DEFAULT_LLAMA_CPP_URL).strip()
     payload = {
         "model": model,
-        "prompt": prompt,
-        "stream": False,
-        "format": "json",
-        "options": {"temperature": 0.2},
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.2,
+        "max_tokens": 120,
     }
 
     last_err: Exception | None = None
+    data: Dict[str, Any] | None = None
     for attempt in range(max(1, retries + 1)):
         try:
-            resp = requests.post(f"{ollama_url}/api/generate", json=payload, timeout=timeout_s)
+            resp = requests.post(f"{llama_cpp_url}/v1/chat/completions", json=payload, timeout=timeout_s)
             resp.raise_for_status()
             data = resp.json()
             break
@@ -140,17 +142,14 @@ Job page text (may be long; focus on responsibilities and role type):
             last_err = e
             if attempt >= retries:
                 raise
-            continue
         except Exception as e:
             last_err = e
             if attempt >= retries:
                 raise
-            continue
     else:
-        # Should be unreachable
-        raise last_err or RuntimeError("ollama request failed")
+        raise last_err or RuntimeError("llm request failed")
 
-    raw = data.get("response", "")
+    raw = (((data or {}).get("choices") or [{}])[0].get("message") or {}).get("content", "")
     obj = _extract_json(raw)
 
     score = float(obj.get("score", 0))
@@ -160,19 +159,15 @@ Job page text (may be long; focus on responsibilities and role type):
         reasons = [reasons.strip()]
     if not isinstance(reasons, list):
         reasons = [str(reasons)]
-
-    # Force a single short line for downstream sheets.
     reasons = [" ".join(str(r).split()) for r in reasons if str(r).strip()]
     if reasons:
         reasons = [reasons[0][:180]]
 
-    # Clamp score
     if score < 0:
         score = 0
     if score > 100:
         score = 100
-
     if decision not in {"yes", "no", "maybe"}:
         decision = "maybe"
 
-    return LLMScore(score=score, decision=decision, reasons=[str(r) for r in reasons], model=data.get("model", model))
+    return LLMScore(score=score, decision=decision, reasons=[str(r) for r in reasons], model=(data.get("model", model) if data else model))

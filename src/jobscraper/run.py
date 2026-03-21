@@ -15,10 +15,11 @@ from .sources.wttj import WTTJConfig, scrape_wttj
 from .sources.weworkremotely import WWRConfig, scrape_weworkremotely
 from .sources.remoteok import RemoteOKConfig, scrape_remoteok
 from .sources.remotive import RemotiveConfig, scrape_remotive
-from .sources.aneti import AnetiConfig, scrape_aneti
 from .sources.linkedin_cdp import LinkedInCDPConfig, scrape_linkedin_first_page
 from .filtering import is_relevant, is_english_title
-from .sheets_sync import SheetsConfig, append_jobs, ensure_jobs_header
+from .sheets_sync import SheetsConfig, append_jobs, ensure_jobs_header, append_jobs_routed
+from .job_text_cache_db import JobTextCacheDB
+from .url_canon import canonicalize_url
 from .alerts.pushover import send_summary
 
 
@@ -39,7 +40,7 @@ def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument(
         "--source",
-        choices=["tanitjobs", "keejob", "welcometothejungle", "weworkremotely", "remoteok", "remotive", "aneti", "linkedin"],
+        choices=["tanitjobs", "keejob", "welcometothejungle", "weworkremotely", "remoteok", "remotive", "linkedin"],
         required=True,
     )
     p.add_argument("--once", action="store_true", help="Run once and exit")
@@ -96,20 +97,39 @@ def main() -> int:
         jobs = []
         from .models import Job
 
-        for jid, title in page_jobs:
+        card_text_by_url = {}
+        for item in page_jobs:
+            jid = str(item.get("id") or "").strip()
+            title = (item.get("title") or "").strip()
+            company = (item.get("company") or "").strip()
+            location = (item.get("location") or "").strip()
+            job_url = (item.get("url") or f"https://www.tanitjobs.com/job/{jid}/").strip()
+            card_text = (item.get("card_text") or "").strip()
             jobs.append(
                 Job(
                     source="tanitjobs",
-                    external_id=str(jid),
+                    external_id=jid,
                     title=title,
-                    company="",
-                    location="",
-                    url=f"https://www.tanitjobs.com/job/{jid}/",
+                    company=company,
+                    location=location,
+                    url=job_url,
                     posted_at=None,
                 )
             )
+            if card_text:
+                card_text_by_url[job_url] = card_text
 
         new_jobs = db.upsert_jobs(jobs)
+        if new_jobs and card_text_by_url:
+            cache_db = JobTextCacheDB(Path("data") / "jobs.sqlite3")
+            try:
+                for j in new_jobs:
+                    txt = card_text_by_url.get(j.url)
+                    if not txt:
+                        continue
+                    cache_db.upsert(url_canon=canonicalize_url(j.url), url=j.url, text=txt, method="tanitjobs_card", status="ok", error=None)
+            finally:
+                cache_db.close()
         relevant_new = [j for j in new_jobs if is_relevant(j.title)]
 
         print(f"tanitjobs: scraped={len(jobs)} new={len(new_jobs)} relevant_new={len(relevant_new)}")
@@ -117,9 +137,7 @@ def main() -> int:
             print(f"NEW: {j.title} | {j.url}")
 
         if args.sheet_id:
-            scfg = SheetsConfig(sheet_id=args.sheet_id, tab=args.sheet_tab, account=args.sheet_account)
-            ensure_jobs_header(scfg)
-            append_jobs(scfg, relevant_new, date_label=today_label)
+            append_jobs_routed(args.sheet_id, args.sheet_account, relevant_new, today_label, "Sales_Today", "Tech_Today")
 
         if args.notify and relevant_new:
             lines = [f"{j.title}\n{j.url}" for j in relevant_new]
@@ -137,9 +155,7 @@ def main() -> int:
             print(f"NEW: {j.title} | {j.company} | {j.location} | {j.url}")
 
         if args.sheet_id:
-            scfg = SheetsConfig(sheet_id=args.sheet_id, tab=args.sheet_tab, account=args.sheet_account)
-            ensure_jobs_header(scfg)
-            append_jobs(scfg, relevant_new, date_label=today_label)
+            append_jobs_routed(args.sheet_id, args.sheet_account, relevant_new, today_label, "Sales_Today", "Tech_Today")
 
         if args.notify and relevant_new:
             lines = [f"{j.title} | {j.url}" for j in relevant_new]
@@ -157,9 +173,7 @@ def main() -> int:
             print(f"NEW: {j.title} | {j.company} | {j.url}")
 
         if args.sheet_id:
-            scfg = SheetsConfig(sheet_id=args.sheet_id, tab=args.sheet_tab, account=args.sheet_account)
-            ensure_jobs_header(scfg)
-            append_jobs(scfg, relevant_new, date_label=today_label)
+            append_jobs_routed(args.sheet_id, args.sheet_account, relevant_new, today_label, "Sales_Today", "Tech_Today")
 
         if args.notify and relevant_new:
             lines = [f"{j.title} | {j.url}" for j in relevant_new]
@@ -177,9 +191,7 @@ def main() -> int:
             print(f"NEW: {j.title} | {j.company} | {j.url}")
 
         if args.sheet_id:
-            scfg = SheetsConfig(sheet_id=args.sheet_id, tab=args.sheet_tab, account=args.sheet_account)
-            ensure_jobs_header(scfg)
-            append_jobs(scfg, relevant_new, date_label=today_label)
+            append_jobs_routed(args.sheet_id, args.sheet_account, relevant_new, today_label, "Sales_Today", "Tech_Today")
 
         if args.notify and relevant_new:
             lines = [f"{j.title} | {j.url}" for j in relevant_new]
@@ -197,9 +209,7 @@ def main() -> int:
             print(f"NEW: {j.title} | {j.company} | {j.url}")
 
         if args.sheet_id:
-            scfg = SheetsConfig(sheet_id=args.sheet_id, tab=args.sheet_tab, account=args.sheet_account)
-            ensure_jobs_header(scfg)
-            append_jobs(scfg, relevant_new, date_label=today_label)
+            append_jobs_routed(args.sheet_id, args.sheet_account, relevant_new, today_label, "Sales_Today", "Tech_Today")
 
         if args.notify and relevant_new:
             lines = [f"{j.title} | {j.url}" for j in relevant_new]
@@ -217,34 +227,11 @@ def main() -> int:
             print(f"NEW: {j.title} | {j.company} | {j.url}")
 
         if args.sheet_id:
-            scfg = SheetsConfig(sheet_id=args.sheet_id, tab=args.sheet_tab, account=args.sheet_account)
-            ensure_jobs_header(scfg)
-            append_jobs(scfg, relevant_new, date_label=today_label)
+            append_jobs_routed(args.sheet_id, args.sheet_account, relevant_new, today_label, "Sales_Today", "Tech_Today")
 
         if args.notify and relevant_new:
             lines = [f"{j.title} | {j.url}" for j in relevant_new]
             send_summary(title=f"remotive: {len(relevant_new)} new relevant", lines=lines)
-
-    if args.source == "aneti":
-        # CDP-only: ANETI blocks our server IP, so we use your Windows Chrome session.
-        cdp_url = os.getenv("CDP_URL", "http://172.21.160.1:9330").strip() or "http://172.21.160.1:9330"
-        cfg = AnetiConfig(cdp_url=cdp_url, max_offers=25)
-        jobs, reason = scrape_aneti(cfg=cfg)
-        if reason.startswith("cdp_error"):
-            print(f"aneti: {reason}")
-            return 2
-        new_jobs = db.upsert_jobs(jobs)
-
-        relevant_new = [j for j in new_jobs if is_relevant(j.title)]
-
-        print(f"aneti: scraped={len(jobs)} new={len(new_jobs)} relevant_new={len(relevant_new)}")
-        for j in relevant_new[:20]:
-            print(f"NEW: {j.title} | {j.url}")
-
-        if args.sheet_id:
-            scfg = SheetsConfig(sheet_id=args.sheet_id, tab=args.sheet_tab, account=args.sheet_account)
-            ensure_jobs_header(scfg)
-            append_jobs(scfg, relevant_new, date_label=today_label)
 
     if args.source == "linkedin":
         # CDP-only: use your logged-in Windows Chrome.
@@ -337,10 +324,8 @@ def main() -> int:
             print(f"NEW: {j.title} | {j.company} | {j.location} | {j.url}")
 
         if args.sheet_id:
-            scfg = SheetsConfig(sheet_id=args.sheet_id, tab=args.sheet_tab, account=args.sheet_account)
-            ensure_jobs_header(scfg)
-            # Jobs already carry per-geo source labels (e.g. 'linkedin TN').
-            append_jobs(scfg, relevant_new, date_label=today_label)
+            # Route LinkedIn jobs the same way as Keejob/Tanitjobs.
+            append_jobs_routed(args.sheet_id, args.sheet_account, relevant_new, today_label, "Sales_Today", "Tech_Today")
 
         if args.notify and relevant_new:
             lines = [f"{j.title} | {j.url}" for j in relevant_new]

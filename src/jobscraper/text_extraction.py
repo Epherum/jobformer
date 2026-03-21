@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import time
+from html import unescape
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Iterable, Optional
@@ -101,6 +102,86 @@ def _http_seems_cloudflare(url: str, timeout_s: int = 4) -> bool:
     return False
 
 
+
+
+def _extract_keejob_structured_text(html: str) -> str:
+    if HTMLParser is None or not html:
+        return ""
+    tree = HTMLParser(html)
+    for node in tree.css("script, style, noscript"):
+        node.decompose()
+
+    def norm(s: str) -> str:
+        return _clean_text(unescape(s or ""))
+
+    parts: list[str] = []
+
+    title = ""
+    for sel in ["h1", ".text-2xl", ".text-3xl"]:
+        n = tree.css_first(sel)
+        if n and norm(n.text(separator=" ")):
+            title = norm(n.text(separator=" "))
+            break
+    if title:
+        parts.append(title)
+
+    company = ""
+    for href in tree.css("a[href^='/offres-emploi/companies/']"):
+        t = norm(href.text(separator=" "))
+        if t:
+            company = t
+            break
+    if company:
+        parts.append(f"Entreprise: {company}")
+
+    details_card = None
+    for div in tree.css('div'):
+        txt = norm(div.text(separator=' '))
+        if 'Référence' in txt and 'Date de publication' in txt and 'Lieu de travail' in txt and 'Langues' in txt:
+            details_card = div
+            break
+
+    labels = [
+        'Référence',
+        'Date de publication',
+        'Type de contrat',
+        'Lieu de travail',
+        'Expérience requise',
+        "Niveau d'études",
+        'Disponibilité',
+        'Langues',
+    ]
+
+    if details_card is not None:
+        for label in labels:
+            node = None
+            for h in details_card.css('h3'):
+                if norm(h.text(separator=' ')) == label:
+                    node = h.parent
+                    break
+            if node is None:
+                continue
+            vals = []
+            for n in node.css('p, span'):
+                v = norm(n.text(separator=' '))
+                if not v or v == label or v in vals:
+                    continue
+                vals.append(v)
+            if vals:
+                parts.append(f"{label}: {', '.join(vals)}")
+
+    desc = ''
+    main = tree.css_first('main')
+    if main is not None:
+        txt = norm(main.text(separator=' '))
+        m = re.search(r"Description de l'annonce\s*Description\s*(.+)", txt, re.I)
+        if m:
+            desc = m.group(1).strip()
+    if desc:
+        parts.append('Description: ' + desc[:5000])
+
+    return '\n'.join(parts).strip()
+
 def _fetch_http(url: str, timeout_s: int = 20, max_chars: int = 8000) -> TextFetchResult:
     try:
         resp = requests.get(url, headers={"User-Agent": DEFAULT_UA}, timeout=timeout_s)
@@ -116,16 +197,20 @@ def _fetch_http(url: str, timeout_s: int = 20, max_chars: int = 8000) -> TextFet
     html = resp.text or ""
 
     text: Optional[str] = None
-    if HTMLParser is not None:
-        tree = HTMLParser(html)
-        for node in tree.css("script, style, noscript"):
-            node.decompose()
-        if tree.body is not None:
-            text = tree.body.text(separator=" ")
+    if 'keejob.com' in _host(url):
+        text = _extract_keejob_structured_text(html)
+
+    if not text:
+        if HTMLParser is not None:
+            tree = HTMLParser(html)
+            for node in tree.css("script, style, noscript"):
+                node.decompose()
+            if tree.body is not None:
+                text = tree.body.text(separator=" ")
+            else:
+                text = tree.text(separator=" ")
         else:
-            text = tree.text(separator=" ")
-    else:
-        text = re.sub(r"<[^>]+>", " ", html)
+            text = re.sub(r"<[^>]+>", " ", html)
 
     text = _clean_text(text or "")
     if max_chars and len(text) > max_chars:

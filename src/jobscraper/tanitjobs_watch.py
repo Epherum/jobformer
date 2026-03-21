@@ -4,7 +4,7 @@ import argparse
 import json
 import re
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
 from urllib.parse import unquote, urlparse
 
 from playwright.sync_api import TimeoutError as PWTimeoutError
@@ -51,10 +51,10 @@ def fetch_first_page_jobs(
     timeout_ms: int,
     cdp_url: Optional[str] = None,
     max_jobs: int = 80,
-) -> Tuple[List[Tuple[str, str]], str]:
-    """Return list of (job_id, title) from the first page."""
+) -> Tuple[List[Dict[str, str]], str]:
+    """Return rich card data from the first page."""
 
-    def _scrape(page) -> Tuple[List[Tuple[str, str]], str]:
+    def _scrape(page) -> Tuple[List[Dict[str, str]], str]:
         page.set_default_timeout(timeout_ms)
 
         try:
@@ -66,28 +66,43 @@ def fetch_first_page_jobs(
                 return [], "blocked:cloudflare"
 
             items = page.eval_on_selector_all(
-                "a[href*='/job/']",
+                "article.listing-item, article[class*='listing-item']",
                 """
-                els => els.map(a => ({
-                  href: a.getAttribute('href') || '',
-                  // innerText is closer to what a human sees than textContent
-                  text: (a.innerText || '').trim(),
-                  aria: (a.getAttribute('aria-label') || '').trim(),
-                  title: (a.getAttribute('title') || '').trim(),
-                  // sometimes the title sits on a parent container
-                  cardText: ((a.closest('article') || a.closest('div') || a).innerText || '').trim(),
-                }))
+                function(cards) {
+                  function norm(s) { return (s || '').replace(/\s+/g, ' ').trim(); }
+                  return cards.map(function(card) {
+                    var a = card.querySelector(".listing-item__title a[href*='/job/'], a[href*='/job/']");
+                    var href = a ? (a.getAttribute('href') || '') : '';
+                    var titleNode = card.querySelector('.listing-item__title a, .listing-item__title');
+                    var title = norm((titleNode ? titleNode.innerText : '') || (a ? a.innerText : '') || '');
+                    var companyNode = card.querySelector('.listing-item-info-company');
+                    var locationNode = card.querySelector('.listing-item-info-location');
+                    var dateNode = card.querySelector('.listing-item__date');
+                    var descNode = card.querySelector('.listing-item__desc.hidden-sm.hidden-xs, .listing-item__desc');
+                    var company = norm(companyNode ? companyNode.innerText : '').replace(/\s+-\s*$/, '');
+                    var location = norm(locationNode ? locationNode.innerText : '');
+                    var date = norm(dateNode ? dateNode.innerText : '');
+                    var desc = norm(descNode ? descNode.innerText : '');
+                    var meta = [company, location].filter(Boolean).join(' - ');
+                    var cardText = [title, meta, desc, date].filter(Boolean).join(' | ');
+                    return { href: href, title: title, company: company, location: location, date: date, desc: desc, cardText: cardText };
+                  });
+                }
                 """,
             )
 
-            out: List[Tuple[str, str]] = []
+            out: List[Dict[str, str]] = []
             seen: set[str] = set()
             for it in items:
                 href = (it.get("href") or "").strip()
-                text = (it.get("text") or "").strip()
-                aria = (it.get("aria") or "").strip()
-                title_attr = (it.get("title") or "").strip()
+                text = (it.get("title") or "").strip()
+                aria = ""
+                title_attr = ""
                 card_text = (it.get("cardText") or "").strip()
+                company = (it.get("company") or "").strip()
+                location = (it.get("location") or "").strip()
+                posted_at = (it.get("date") or "").strip()
+                desc = (it.get("desc") or "").strip()
 
                 m = _JOB_RE.search(href)
                 if not m:
@@ -118,7 +133,7 @@ def fetch_first_page_jobs(
                 if not title:
                     title = _title_from_job_url(job_url)
 
-                out.append((jid, title or job_url))
+                out.append({"id": jid, "title": title or job_url, "company": company, "location": location, "posted_at": posted_at, "url": job_url, "card_text": card_text, "desc": desc})
                 if len(out) >= max_jobs:
                     break
 

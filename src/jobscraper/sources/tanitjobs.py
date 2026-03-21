@@ -49,58 +49,63 @@ def _open_page(ctx: BrowserContext, url: str, timeout_ms: int) -> Page:
 
 
 def _extract_jobs(page: Page) -> List[Job]:
-    """Best-effort extraction.
+    """Extract Tanitjobs listing cards with title, company, location, and date.
 
-    Because we cannot reliably inspect Tanitjobs DOM until Cloudflare is passed,
-    this function tries multiple heuristics and writes HTML snapshots for tuning.
+    The /jobs page exposes cards as article.listing-item blocks. We read the card
+    fields directly instead of relying on bare anchors so we keep the richer data
+    shown on the listing page.
     """
 
-    # Heuristic 1: job cards often contain anchors to a job details page.
-    anchors = page.locator("a[href]")
-    count = anchors.count()
+    items = page.eval_on_selector_all(
+        "article.listing-item, article[class*='listing-item']",
+        """(cards) => cards.map((card) => {
+            const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+            const href = card.querySelector(".listing-item__title a[href*='/job/'], a[href*='/job/']")?.href || '';
+            const title = norm(card.querySelector('.listing-item__title a, .listing-item__title')?.innerText || '');
+            const company = norm(card.querySelector('.listing-item-info-company')?.innerText || '').replace(/\s+-\s*$/, '');
+            const location = norm(card.querySelector('.listing-item-info-location')?.innerText || '');
+            const postedAt = norm(card.querySelector('.listing-item__date')?.innerText || '');
+            const cardText = norm(card.innerText || '');
+            return { href, title, company, location, postedAt, cardText };
+        })""",
+    )
 
     jobs: List[Job] = []
     seen = set()
 
-    for i in range(min(count, 500)):
-        a = anchors.nth(i)
-        href = a.get_attribute("href")
+    for item in items or []:
+        href = (item.get("href") or "").strip()
         if not href:
             continue
-        if "tanitjobs.com" not in href and not href.startswith("/"):
-            continue
-
         url = urljoin(page.url, href)
-        # Filter out obvious non-job links.
         if any(x in url for x in ("/login", "/register", "/contact", "/privacy", "/terms")):
             continue
         if url.rstrip("/") == "https://www.tanitjobs.com" or url.rstrip("/") == "https://www.tanitjobs.com/jobs":
             continue
-
-        # Many job links contain /jobs/ or /job/
         if "/job" not in url and "/jobs/" not in url:
             continue
-
-        key = url
-        if key in seen:
+        if url in seen:
             continue
-        seen.add(key)
+        seen.add(url)
 
-        title = (a.inner_text() or "").strip()
-        if not title or len(title) < 3:
-            # Try aria-label/title attributes.
-            title = (a.get_attribute("aria-label") or a.get_attribute("title") or "").strip()
+        title = (item.get("title") or "").strip()
+        company = (item.get("company") or "").strip()
+        location = (item.get("location") or "").strip()
+        posted_at = (item.get("postedAt") or "").strip() or None
+        if not title:
+            card_text = (item.get("cardText") or "").strip()
+            if card_text:
+                title = card_text.split(' Voir Plus', 1)[0].split('  ', 1)[0].strip()
 
-        # Company/location are usually not in the <a> itself. Leave blank for now.
         jobs.append(
             Job(
                 source="tanitjobs",
                 external_id=_guess_external_id(url),
                 title=title or "(unknown)",
-                company="",
-                location="",
+                company=company,
+                location=location,
                 url=url,
-                posted_at=None,
+                posted_at=posted_at,
             )
         )
 

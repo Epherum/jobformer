@@ -4,9 +4,14 @@ import csv
 import datetime as dt
 import os
 import re
+import signal
+import socket
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -55,6 +60,98 @@ DEFAULT_SHEET_ID = ""  # pass explicitly
 DEFAULT_LOG = Path("data/run_log.csv")
 
 
+def _tcp_ready(host: str, port: int, timeout_s: float = 0.5) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout_s):
+            return True
+    except Exception:
+        return False
+
+
+def _http_ready(url: str, timeout_s: float = 1.5) -> bool:
+    try:
+        with urllib.request.urlopen(url, timeout=timeout_s) as resp:
+            return int(getattr(resp, 'status', 200) or 200) < 500
+    except urllib.error.HTTPError as e:
+        return int(getattr(e, 'code', 500) or 500) < 500
+    except Exception:
+        return False
+
+
+def _wait_http_ready(url: str, timeout_s: float = 90.0, poll_s: float = 0.5) -> bool:
+    deadline = time.time() + max(1.0, timeout_s)
+    while time.time() < deadline:
+        if _http_ready(url, timeout_s=min(2.0, poll_s + 1.0)):
+            return True
+        time.sleep(poll_s)
+    return False
+
+
+@contextmanager
+def _llama_cpp_server_for_scoring(model_path: str):
+    base_url = (os.getenv('LLAMA_CPP_URL') or 'http://127.0.0.1:8080').strip().rstrip('/')
+    health_url = base_url + '/health'
+    if _http_ready(health_url) or _http_ready(base_url + '/v1/models'):
+        yield None
+        return
+
+    server_bin = (os.getenv('LLAMA_CPP_SERVER_BIN') or '/home/wassim/llama.cpp/build/bin/llama-server').strip()
+    host = (os.getenv('LLAMA_CPP_HOST') or '127.0.0.1').strip()
+    port = int((os.getenv('LLAMA_CPP_PORT') or '8080').strip() or '8080')
+    threads = int((os.getenv('LLAMA_CPP_THREADS') or '8').strip() or '8')
+    ctx_size = int((os.getenv('LLAMA_CPP_CTX') or '4096').strip() or '4096')
+    gpu_layers = (os.getenv('LLAMA_CPP_N_GPU_LAYERS') or '999').strip()
+    parallel = int((os.getenv('LLAMA_CPP_PARALLEL') or '2').strip() or '2')
+    batch = int((os.getenv('LLAMA_CPP_BATCH') or '1024').strip() or '1024')
+    ubatch = int((os.getenv('LLAMA_CPP_UBATCH') or '512').strip() or '512')
+
+    log_dir = Path('data')
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / 'llama_server.log'
+    log_f = open(log_path, 'a', encoding='utf-8')
+    cmd = [
+        server_bin,
+        '-m', model_path,
+        '--host', host,
+        '--port', str(port),
+        '-t', str(threads),
+        '-c', str(ctx_size),
+        '--parallel', str(parallel),
+        '--batch-size', str(batch),
+        '--ubatch-size', str(ubatch),
+        '--jinja',
+    ]
+    if gpu_layers:
+        cmd += ['-ngl', gpu_layers]
+
+    proc = None
+    try:
+        proc = subprocess.Popen(cmd, stdout=log_f, stderr=subprocess.STDOUT, start_new_session=True)
+        if not _wait_http_ready(health_url, timeout_s=120.0, poll_s=0.75) and not _wait_http_ready(base_url + '/v1/models', timeout_s=5.0, poll_s=0.75):
+            raise RuntimeError(f'llama.cpp server failed to start at {base_url}; see {log_path}')
+        yield {'pid': proc.pid, 'url': base_url, 'log': str(log_path)}
+    finally:
+        if proc is not None and proc.poll() is None:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except Exception:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+            try:
+                proc.wait(timeout=20)
+            except Exception:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+        log_f.close()
+
+
 @dataclass
 class Task:
     name: str
@@ -81,7 +178,6 @@ SUSPICIOUS_ZERO_SCRAPE = {
     # If they return 0, it's often a parsing/layout change, blocking, or network issue.
     "keejob",
     "tanitjobs",
-    "aneti",
     "linkedin",
 }
 
@@ -158,7 +254,7 @@ def _detect_issues(task: Task, code: int, output: str) -> list[str]:
     o = (output or "")
     if "429" in o or "Too Many Requests" in o:
         issues.append(f"{task.name}: rate-limited (429)")
-    if "403" in o and task.name in {"tanitjobs", "aneti"}:
+    if "403" in o and task.name in {"tanitjobs"}:
         issues.append(f"{task.name}: forbidden/blocked (403)")
     if "Web Page Blocked" in o:
         issues.append(f"{task.name}: blocked")
@@ -497,7 +593,7 @@ def doctor() -> None:
 @app.command()
 def dashboard(
     sheet_id: str = typer.Option("", help="Google Sheet ID (or set SHEET_ID in data/config.env)."),
-    jobs_today_tab: str = typer.Option("", help="Tab where scraper appends new relevant jobs."),
+    jobs_today_tab: str = typer.Option("", help="Legacy default sheet tab (unused by direct routing)."),
     all_jobs_tab: str = typer.Option("", help="Tab name for full DB export."),
     interval_min: int = typer.Option(0, help="Full cycle interval minutes."),
     log_csv: Path = typer.Option(DEFAULT_LOG, help="CSV run log path."),
@@ -531,6 +627,8 @@ def dashboard(
         sheet_account=cfg.sheet_account,
         jobs_tab=cfg.jobs_tab,
         jobs_today_tab=jobs_today_tab,
+        sales_today_tab=cfg.sales_today_tab,
+        tech_today_tab=cfg.tech_today_tab,
         all_jobs_tab=all_jobs_tab,
         cdp_url=cfg.cdp_url,
         interval_min=interval_min,
@@ -539,7 +637,6 @@ def dashboard(
     if show_windows_snippet:
         # Optional helper snippet to quickly start CDP Chrome from Windows.
         tanit_url = "https://www.tanitjobs.com/jobs/"
-        aneti_url = "https://www.emploi.nat.tn/fo/Fr/global.php?page=146&=true&FormLinks_Sorting=7&FormLinks_Sorted=7"
         console.print("\nWindows (PowerShell) snippet to start Chrome in CDP mode and open the 2 sites:")
         console.print(
             """
@@ -554,7 +651,6 @@ Start-Process $Chrome -ArgumentList @(
   "--remote-debugging-port=9330",
   "--user-data-dir=$UserData",
   """ + tanit_url + """,
-  """ + aneti_url + """
 )
 """.strip()
         )
@@ -578,7 +674,7 @@ Start-Process $Chrome -ArgumentList @(
 
     # One unified cycle. Tiers are just implementation difficulty.
     # Tier-1 sources are server-side; Tier-2 are CDP-based (Windows Chrome).
-    sources = ["keejob", "tanitjobs", "aneti"]
+    sources = ["keejob", "tanitjobs"]
 
     cdp = cfg.cdp_url
 
@@ -755,6 +851,7 @@ Start-Process $Chrome -ArgumentList @(
             state.cycle_no += 1
             state.new_relevant = 0
             state.issues = 0
+            state.hot_jobs = []
             state.unscored_remaining = None
             state.cache_ok = 0
             state.cache_blocked = 0
@@ -854,8 +951,14 @@ Start-Process $Chrome -ArgumentList @(
                 from jobscraper.sheets_sync import SheetsConfig, _get_sheet_rows
                 from jobscraper.text_extraction import extract_text_for_urls
 
-                sheet_cfg = SheetsConfig(sheet_id=sheet_id, tab=jobs_today_tab, account=cfg.sheet_account)
-                rows = _get_sheet_rows(sheet_cfg)
+                tabs_to_score = [cfg.sales_today_tab, cfg.tech_today_tab]
+                rows = []
+                from jobscraper.sheets_sync import _get_sheet_rows
+                for _tab in tabs_to_score:
+                    _rows = _get_sheet_rows(SheetsConfig(sheet_id=sheet_id, tab=_tab, account=cfg.sheet_account))
+                    if _rows and len(_rows) > 1:
+                        rows.extend([_rows[0]] if not rows else [])
+                        rows.extend(_rows[1:])
 
                 # Collect URLs from Jobs_Today that still need scoring.
                 urls: list[str] = []
@@ -865,11 +968,6 @@ Start-Process $Chrome -ArgumentList @(
                     url = (r[6] or "").strip()
                     score = (r[8] or "").strip() if len(r) > 8 else ""
                     if not url or score:
-                        continue
-
-                    # Tanitjobs detail pages frequently trigger Cloudflare challenges.
-                    # Keep Tanitjobs for scraping job *listings*, but skip detail text extraction in the dashboard pipeline.
-                    if "tanitjobs.com" in url:
                         continue
 
                     urls.append(url)
@@ -931,54 +1029,70 @@ Start-Process $Chrome -ArgumentList @(
                     total_scored = 0
                     total_updated = 0
                     total_errors = 0
+                    hot_jobs = []
                     last_missing = None
 
-                    for p in range(1, 4):
-                        state.phase = f"Score (cached) pass {p}/3"
-                        _update_live(live_ctx)
-
-                        state.score_scored = 0
-                        state.score_target = max_jobs
-                        _update_live(live_ctx, force=True)
-
-                        def _on_score(ev: dict) -> None:
-                            # ev: {kind, url, processed, total}
-                            state.score_scored = int(ev.get("processed", 0) or 0)
-                            state.score_target = int(ev.get("total", 0) or 0) or max_jobs
+                    with _llama_cpp_server_for_scoring(model) as llama_server:
+                        if llama_server:
+                            score_task.last_summary = f"llama.cpp up pid={llama_server['pid']}"
                             _update_live(live_ctx)
 
-                        summary = score_unscored_sheet_rows_from_cache(
-                            db_path=Path("data") / "jobs.sqlite3",
-                            model=model,
-                            sheet_cfg=SheetsConfig(sheet_id=sheet_id, tab=jobs_today_tab, account=cfg.sheet_account),
-                            max_jobs=max_jobs,
-                            concurrency=2,
-                            extract_missing=False,
-                            progress_cb=_on_score,
-                        )
+                        for p in range(1, 4):
+                            state.phase = f"Score (cached) pass {p}/3"
+                            _update_live(live_ctx)
 
-                        total_scored += int(summary.get("scored", 0) or 0)
-                        total_updated += int(summary.get("updated_rows", 0) or 0)
-                        total_errors += int(summary.get("errors", 0) or 0)
+                            state.score_scored = 0
+                            state.score_target = max_jobs
+                            _update_live(live_ctx, force=True)
 
-                        missing = int(summary.get("missing", 0) or 0)
-                        state.unscored_remaining = missing
-                        # Keep the progress bar as "processed/total" instead of "scored/max".
-                        # Mark the pass as finished.
-                        state.score_scored = state.score_target
+                            def _on_score(ev: dict) -> None:
+                                state.score_scored = int(ev.get("processed", 0) or 0)
+                                state.score_target = int(ev.get("total", 0) or 0) or max_jobs
+                                _update_live(live_ctx)
 
-                        score_task.last_summary = f"pass={p}/3 scored={summary['scored']} updated={summary['updated_rows']} missing={missing}"
-                        _update_live(live_ctx)
+                            summary_sales = score_unscored_sheet_rows_from_cache(
+                                db_path=Path("data") / "jobs.sqlite3",
+                                model=model,
+                                sheet_cfg=SheetsConfig(sheet_id=sheet_id, tab=cfg.sales_today_tab, account=cfg.sheet_account),
+                                max_jobs=max_jobs,
+                                concurrency=2,
+                                extract_missing=False,
+                                progress_cb=_on_score,
+                            )
+                            summary_tech = score_unscored_sheet_rows_from_cache(
+                                db_path=Path("data") / "jobs.sqlite3",
+                                model=model,
+                                sheet_cfg=SheetsConfig(sheet_id=sheet_id, tab=cfg.tech_today_tab, account=cfg.sheet_account),
+                                max_jobs=max_jobs,
+                                concurrency=2,
+                                extract_missing=False,
+                                progress_cb=_on_score,
+                            )
 
-                        # Stop early if no missing remain, or if missing is not changing.
-                        if missing == 0:
-                            break
-                        if last_missing is not None and missing == last_missing:
-                            break
-                        last_missing = missing
+                            pass_scored = int(summary_sales.get("scored", 0) or 0) + int(summary_tech.get("scored", 0) or 0)
+                            pass_updated = int(summary_sales.get("updated_rows", 0) or 0) + int(summary_tech.get("updated_rows", 0) or 0)
+                            pass_errors = int(summary_sales.get("errors", 0) or 0) + int(summary_tech.get("errors", 0) or 0)
+                            total_scored += pass_scored
+                            total_updated += pass_updated
+                            total_errors += pass_errors
+                            hot_jobs.extend(summary_sales.get("hot_jobs") or [])
+                            hot_jobs.extend(summary_tech.get("hot_jobs") or [])
 
+                            missing = int(summary_sales.get("missing", 0) or 0) + int(summary_tech.get("missing", 0) or 0)
+                            state.unscored_remaining = missing
+                            state.score_scored = state.score_target
+
+                            score_task.last_summary = f"pass={p}/3 scored={pass_scored} updated={pass_updated} missing={missing} errors={pass_errors}"
+                            _update_live(live_ctx)
+
+                            if missing == 0:
+                                break
+                            if last_missing is not None and missing == last_missing:
+                                break
+                            last_missing = missing
+                    state.hot_jobs = hot_jobs
                     score_task.last_exit = 0
-                    score_task.last_summary = f"passes<=3 scored={total_scored} updated={total_updated} errors={total_errors}"
+                    score_task.last_summary = f"passes<=3 scored={total_scored} updated={total_updated} errors={total_errors} hot={len(hot_jobs)}"
                 except Exception as e:
                     score_task.last_exit = 1
                     score_task.last_summary = f"error={e}"[:160]
@@ -990,44 +1104,49 @@ Start-Process $Chrome -ArgumentList @(
             # All-jobs sheet sync is now a manual command (push-all-jobs).
 
             # Send ONE pushover notification per cycle.
-            # - If we have new relevant jobs: send titles only.
-            # - If we have issues (best-effort mode): include a short issues section.
+            # - hot jobs only (score >= 75)
+            # - errors/issues even if there are no hot jobs
             state.phase = "Notify"
             notify_task.last_exit = 0
             notify_task.last_summary = "no notification"
-            if cycle_lines or cycle_issues:
+            hot_jobs = list(getattr(state, "hot_jobs", []) or [])
+            if hot_jobs or cycle_issues or extract_task.last_exit or score_task.last_exit:
                 notify_task.last_summary = "sending pushover"
                 _update_live(live_ctx)
 
                 from jobscraper.alerts.pushover import send_summary
 
-                lines: List[str] = []
-                lines.extend(cycle_lines)
+                hot_lines: List[str] = []
+                if hot_jobs:
+                    hot_lines.append("Hot jobs (75+):")
+                    for j in hot_jobs[:10]:
+                        hot_lines.append(f"{int(round(float(j.get('score', 0))))}: {j.get('title','')} | {(j.get('reason','') or '')}")
 
-                # Add issues at the end to keep the top of the notification useful.
-                if cycle_issues:
-                    lines.append("---")
-                    lines.append("Issues:")
-                    # de-dupe and cap
-                    uniq = []
-                    seen = set()
-                    for it in cycle_issues:
-                        if it in seen:
-                            continue
-                        seen.add(it)
-                        uniq.append(it)
-                    lines.extend(uniq[:8])
-                    if len(uniq) > 8:
-                        lines.append("…")
+                uniq = []
+                seen = set()
+                for it in cycle_issues:
+                    if it in seen:
+                        continue
+                    seen.add(it)
+                    uniq.append(it)
+                if extract_task.last_exit:
+                    uniq.append(f"extract_text error: {extract_task.last_summary}")
+                if score_task.last_exit:
+                    uniq.append(f"score_cached error: {score_task.last_summary}")
 
-                title = f"JobScraper: {len(cycle_lines)} new"
-                if cycle_issues:
-                    title += f" | {len(set(cycle_issues))} issues"
-
+                sent_parts = []
                 try:
-                    send_summary(title=title, lines=lines)
+                    if hot_lines:
+                        send_summary(title=f"Jobformer: {len(hot_jobs)} hot", lines=hot_lines, priority=1)
+                        sent_parts.append(f"{len(hot_jobs)} hot")
+                    if uniq:
+                        issue_lines = ["Issues:", *uniq[:8]]
+                        if len(uniq) > 8:
+                            issue_lines.append("…")
+                        send_summary(title=f"Jobformer issues: {len(uniq)}", lines=issue_lines, priority=-1, sound="none")
+                        sent_parts.append(f"{len(uniq)} issues")
                     notify_task.last_exit = 0
-                    notify_task.last_summary = f"sent ({len(cycle_lines)} new)"
+                    notify_task.last_summary = "sent (" + ", ".join(sent_parts) + ")" if sent_parts else "no notification"
                 except Exception as e:
                     notify_task.last_exit = 1
                     notify_task.last_summary = f"error={e}"[:160]
@@ -1076,22 +1195,20 @@ def smoke() -> None:
 @app.command()
 def transfer_today(
     sheet_id: str = typer.Argument("", help="Google Sheet ID (or set SHEET_ID in data/config.env)."),
-    from_tab: str = typer.Option("", help="Source tab (scraper output)."),
-    to_tab: str = typer.Option("", help="Destination tab (your workflow + dropdown)."),
+    to_tab: str = typer.Option("", help="Destination tab (default All jobs)."),
 ) -> None:
-    """Move all rows from Jobs_Today into Jobs, then clear Jobs_Today."""
+    """Transfer Sales_Today and Tech_Today into All jobs, then clear both source tabs."""
     from .transfer_today import TransferConfig, transfer_today
 
     cfg = _load_cfg_and_chdir()
     sheet_id = sheet_id or cfg.sheet_id
-    from_tab = from_tab or cfg.jobs_today_tab
-    to_tab = to_tab or cfg.jobs_tab
+    to_tab = to_tab or cfg.all_jobs_tab
 
     if not sheet_id:
         console.print("sheet_id is required (pass as arg or set SHEET_ID in data/config.env)")
         raise typer.Exit(2)
 
-    n = transfer_today(TransferConfig(sheet_id=sheet_id, from_tab=from_tab, to_tab=to_tab, account=cfg.sheet_account))
+    n = transfer_today(TransferConfig(sheet_id=sheet_id, from_tabs=[cfg.sales_today_tab, cfg.tech_today_tab], to_tab=to_tab, account=cfg.sheet_account))
     console.print(f"moved_rows={n}")
 
 
@@ -1102,7 +1219,7 @@ def score_today(
     since_hours: int = typer.Option(24, help="Lookback window in hours."),
     max_jobs: int = typer.Option(50, help="Maximum jobs to score in one run."),
     concurrency: int = typer.Option(2, help="Scoring concurrency."),
-    model: str = typer.Option("", help="Ollama model (default qwen2.5:7b-instruct)."),
+    model: str = typer.Option("", help="Local llama.cpp model (default qwen2.5:7b-instruct)."),
     update_sheet: bool = typer.Option(True, "--update-sheet/--no-update-sheet", help="Update Jobs_Today with score columns (I:J)."),
 ) -> None:
     """Score recent relevant jobs from the DB and optionally update Jobs_Today (I:J)."""
@@ -1199,10 +1316,10 @@ def score_cached(
     sheet_tab: str = typer.Option("", help="Sheet tab to update (default Jobs_Today)."),
     max_jobs: int = typer.Option(50, help="Maximum jobs to score in one run."),
     concurrency: int = typer.Option(2, help="Scoring concurrency."),
-    model: str = typer.Option("", help="Ollama model (default qwen2.5:7b-instruct)."),
+    model: str = typer.Option("", help="Local llama.cpp model (default qwen2.5:7b-instruct)."),
     extract_missing: bool = typer.Option(False, help="Attempt text extraction for missing cache entries."),
 ) -> None:
-    """Score Jobs_Today rows using cached job text, and update columns I:J."""
+    """Score unscored rows in a target tab using cached job text, and update columns I:J."""
     from .job_scoring_cached import score_unscored_sheet_rows_from_cache
     from .llm_score import DEFAULT_MODEL
     from .sheets_sync import SheetsConfig
@@ -1239,9 +1356,9 @@ def score_unscored(
     sheet_tab: str = typer.Option("", help="Sheet tab to update (default Jobs_Today)."),
     batch_size: int = typer.Option(25, help="How many rows to score per batch."),
     max_batches: int = typer.Option(50, help="Safety cap on number of batches."),
-    model: str = typer.Option("", help="Ollama model (default qwen2.5:7b-instruct)."),
+    model: str = typer.Option("", help="Local llama.cpp model (default qwen2.5:7b-instruct)."),
 ) -> None:
-    """Score all unscored rows currently present in Jobs_Today (loop in batches)."""
+    """Score all unscored rows currently present in a target tab (loop in batches)."""
 
     from .llm_score import DEFAULT_MODEL
     from .score_unscored_sheet import score_all_unscored_sheet_rows
@@ -1303,7 +1420,7 @@ def score_open_tabs(
     sheet_id: str = typer.Option("", help="Google Sheet ID (or set SHEET_ID in data/config.env)."),
     sheet_tab: str = typer.Option("", help="Sheet tab to update (default Jobs_Today)."),
     max_tabs: int = typer.Option(25, help="How many open tabs to consider (most recent first)."),
-    model: str = typer.Option("", help="Ollama model (default qwen2.5:7b-instruct)."),
+    model: str = typer.Option("", help="Local llama.cpp model (default qwen2.5:7b-instruct)."),
     dry_run: bool = typer.Option(False, help="Do not update the sheet, just print what would be updated."),
     open_unscored: bool = typer.Option(False, help="Open unscored sheet URLs in the CDP browser first (best-effort)."),
     sites: str = typer.Option("", help="Comma-separated host filters (e.g. tanitjobs.com,linkedin.com)."),
@@ -1335,7 +1452,7 @@ def score_open_tabs(
 
     from .cdp_open_tabs import extract_text_from_open_tabs, open_urls_in_cdp
     from .job_text_cache_db import JobTextCacheDB
-    from .llm_score import DEFAULT_MODEL, score_job_with_ollama
+    from .llm_score import DEFAULT_MODEL, score_job_with_local_llm
     from .sheets_sync import SheetsConfig, _get_sheet_rows, update_job_scores
     from .url_canon import canonicalize_url
 
@@ -1442,7 +1559,7 @@ def score_open_tabs(
             continue
 
         sheet_url = canon_to_sheet_url.get(cu) or (row.get("url") or "")
-        llm = score_job_with_ollama(
+        llm = score_job_with_local_llm(
             title=title,
             company=company,
             location=location,

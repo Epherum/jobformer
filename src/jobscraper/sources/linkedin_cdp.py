@@ -14,7 +14,7 @@ from ..models import Job
 class LinkedInCDPConfig:
     cdp_url: str
     url: str
-    timeout_ms: int = 45_000
+    timeout_ms: int = 70_000
     max_jobs: int = 60
 
 
@@ -55,27 +55,57 @@ def scrape_linkedin_first_page(cfg: LinkedInCDPConfig) -> Tuple[List[Job], str]:
         return [], f"cdp_error: {e}"
 
     ctx = browser.contexts[0] if browser.contexts else browser.new_context()
-    page = ctx.new_page()
+    page = None
+    created = False
+    for pg in ctx.pages:
+        try:
+            if "linkedin.com/jobs" in (pg.url or ""):
+                page = pg
+                break
+        except Exception:
+            continue
+    if page is None:
+        page = ctx.new_page()
+        created = True
     page.set_default_timeout(cfg.timeout_ms)
 
     try:
-        try:
-            page.goto(cfg.url, wait_until="domcontentloaded")
-        except PWTimeoutError:
-            pass
-
-        page.wait_for_timeout(2000)
-
-        for sel in [
-            "ul.scaffold-layout__list-container",
-            "div.jobs-search-results-list",
-            "main",
-        ]:
+        last_nav_err = None
+        for attempt in range(3):
             try:
-                page.wait_for_selector(sel, timeout=8_000)
+                page.goto(cfg.url, wait_until="domcontentloaded", timeout=cfg.timeout_ms)
+                last_nav_err = None
                 break
-            except PWTimeoutError:
-                continue
+            except PWTimeoutError as e:
+                last_nav_err = e
+                try:
+                    page.wait_for_load_state("domcontentloaded", timeout=10_000)
+                    last_nav_err = None
+                    break
+                except Exception:
+                    pass
+            except Exception as e:
+                last_nav_err = e
+            page.wait_for_timeout(1500 * (attempt + 1))
+
+        page.wait_for_timeout(3500)
+
+        ready = False
+        for _ in range(3):
+            for sel in [
+                "ul.scaffold-layout__list-container",
+                "div.jobs-search-results-list",
+                "main",
+            ]:
+                try:
+                    page.wait_for_selector(sel, timeout=10_000)
+                    ready = True
+                    break
+                except PWTimeoutError:
+                    continue
+            if ready:
+                break
+            page.wait_for_timeout(2000)
 
         # Scroll a bit to load the visible first page cards.
         page.evaluate(
@@ -166,6 +196,9 @@ def scrape_linkedin_first_page(cfg: LinkedInCDPConfig) -> Tuple[List[Job], str]:
             """
         )
 
+        if not items and last_nav_err is not None:
+            raise last_nav_err
+
         for it in items[: cfg.max_jobs]:
             job_id = (it.get("jobId") or "").strip()
             if not job_id:
@@ -189,6 +222,7 @@ def scrape_linkedin_first_page(cfg: LinkedInCDPConfig) -> Tuple[List[Job], str]:
         raise
     finally:
         try:
-            page.close()
+            if created:
+                page.close()
         except Exception:
             pass

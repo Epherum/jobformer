@@ -51,14 +51,26 @@ def canonicalize_url(url: str) -> str:
         if m:
             path = f"/job/{m.group('id')}"
 
+    # LinkedIn job pages appear in two shapes:
+    # - /jobs/view/<id>/
+    # - /jobs/view/<slug>-<id>
+    # For cache stability we canonicalize both to /jobs/view/<id> and drop all query params.
+    keep_query = True
+    if "linkedin.com" in netloc:
+        m = re.match(r"^/jobs/view/(?:.+-)?(?P<id>\d+)(?:/.*)?$", path)
+        if m:
+            path = f"/jobs/view/{m.group('id')}"
+            keep_query = False
+
     if path != "/":
         path = path.rstrip("/")
 
     q = []
-    for k, v in parse_qsl(p.query, keep_blank_values=True):
-        if k in DROP_PARAMS:
-            continue
-        q.append((k, v))
+    if keep_query:
+        for k, v in parse_qsl(p.query, keep_blank_values=True):
+            if k in DROP_PARAMS:
+                continue
+            q.append((k, v))
     q.sort()
     query = urlencode(q, doseq=True)
 

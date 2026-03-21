@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS job_scores (
   decision TEXT,
   reasons TEXT,
   model TEXT,
+  track TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -39,6 +40,10 @@ class JobScoresDB:
 
     def _init(self) -> None:
         self.conn.executescript(SCHEMA)
+        try:
+            self.conn.execute("ALTER TABLE job_scores ADD COLUMN track TEXT")
+        except Exception:
+            pass
         self.conn.commit()
 
     def get(self, url: str) -> Optional[dict]:
@@ -57,7 +62,7 @@ class JobScoresDB:
         rows = cur.fetchall()
         return {row["url"]: dict(row) for row in rows}
 
-    def upsert_score(self, *, url: str, score: float, decision: str, reasons: list[str] | str, model: str) -> None:
+    def upsert_score(self, *, url: str, score: float, decision: str, reasons: list[str] | str, model: str, track: str = "") -> None:
         now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
         if isinstance(reasons, list):
             reasons_json = json.dumps(reasons, ensure_ascii=False)
@@ -68,19 +73,19 @@ class JobScoresDB:
         try:
             cur.execute(
                 """
-                INSERT INTO job_scores (url, score, decision, reasons, model, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO job_scores (url, score, decision, reasons, model, track, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (url, score, decision, reasons_json, model, now, now),
+                (url, score, decision, reasons_json, model, track, now, now),
             )
         except sqlite3.IntegrityError:
             cur.execute(
                 """
                 UPDATE job_scores
-                SET score = ?, decision = ?, reasons = ?, model = ?, updated_at = ?
+                SET score = ?, decision = ?, reasons = ?, model = ?, track = ?, updated_at = ?
                 WHERE url = ?
                 """,
-                (score, decision, reasons_json, model, now, url),
+                (score, decision, reasons_json, model, track, now, url),
             )
         self.conn.commit()
 

@@ -5,7 +5,7 @@ Personal job scraper + lightweight workflow helper.
 It is designed to:
 - scrape multiple job sources into a local SQLite DB
 - append only *relevant* jobs into a daily inbox tab (`Jobs_Today`) in Google Sheets
-- score those inbox rows with a local LLM (Ollama Qwen) and write back a score + short reason
+- score those inbox rows with a local LLM (llama.cpp local model) and write back a score + short reason
 - let you transfer the inbox into your main workflow tab (`Jobs`)
 
 ## What you get
@@ -222,7 +222,7 @@ We canonicalize both forms to the same `/job/<id>` for matching.
 ### Dependencies
 - Python >= 3.10
 - Playwright Chromium installed (`python3 -m playwright install chromium`)
-- Optional: Ollama running for local LLM scoring
+- Required: llama.cpp server running for local LLM scoring
 
 ---
 
