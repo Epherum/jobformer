@@ -11,7 +11,7 @@ from .url_canon import canonicalize_url
 from .llm_score import LLMScore, score_job_with_local_llm
 from .sheets_sync import SheetsConfig, _get_sheet_rows, update_job_scores
 from .text_extraction import extract_text_for_urls
-from .filtering import decision_for_title, DECISION_TOO_SENIOR
+from .filtering import decision_for_title, DECISION_TOO_SENIOR, match_labels
 
 
 @dataclass(frozen=True)
@@ -21,6 +21,7 @@ class ScoreCandidate:
     company: str
     location: str
     url: str
+    sheet_feedback: str = ""
 
 
 @dataclass(frozen=True)
@@ -33,16 +34,31 @@ class ScoreResult:
 
 
 def _score_from_text(candidate: ScoreCandidate, text: str, model: str) -> Optional[ScoreResult]:
+    labels = set(match_labels(candidate.title))
+    manual_feedback = (candidate.sheet_feedback or "").strip()
+
     if decision_for_title(candidate.title) == DECISION_TOO_SENIOR:
         return ScoreResult(
             url=candidate.url,
             score=0,
-            decision="no",
+            decision="OVERSENIOR",
             reasons=["Oversenior role ignored before LLM scoring."],
             model="rule:oversenior",
         )
+
+    if "SALES" not in labels:
+        return ScoreResult(
+            url=candidate.url,
+            score=0,
+            decision="NOT FIT",
+            reasons=["Skipped: non-sales job in sales-only mode."],
+            model="rule:skip-non-sales",
+        )
+
     if not text:
         return None
+
+    learned_bias = "Use prior human feedback as weak background only."
     llm: LLMScore = score_job_with_local_llm(
         title=candidate.title,
         company=candidate.company,
@@ -50,7 +66,10 @@ def _score_from_text(candidate: ScoreCandidate, text: str, model: str) -> Option
         url=candidate.url,
         page_text=text,
         model=model,
+        learned_bias=learned_bias,
+        learned_feedback=manual_feedback,
     )
+
     return ScoreResult(
         url=candidate.url,
         score=llm.score,
@@ -88,7 +107,8 @@ def score_unscored_sheet_rows_from_cache(
         title = r[2].strip() if len(r) > 2 else ""
         company = r[3].strip() if len(r) > 3 else ""
         location = r[4].strip() if len(r) > 4 else ""
-        candidates.append(ScoreCandidate(source=source, title=title, company=company, location=location, url=url))
+        sheet_feedback = r[10].strip() if len(r) > 10 and r[10] is not None else ""
+        candidates.append(ScoreCandidate(source=source, title=title, company=company, location=location, url=url, sheet_feedback=sheet_feedback))
 
     if max_jobs and len(candidates) > max_jobs:
         candidates = candidates[:max_jobs]
@@ -176,12 +196,12 @@ def score_unscored_sheet_rows_from_cache(
                 {
                     "url": r.url,
                     "score": r.score,
-                    "decision": r.decision,
+                    "suggested_decision": r.decision,
                     "reasons": (r.reasons[0] if r.reasons else "")[:180],
                 }
             )
         updated_rows = update_job_scores(sheet_cfg, sheet_updates)
-        hot_jobs = [{"title": next((c.title for c in candidates if c.url == r.url), ""), "source": next((c.source for c in candidates if c.url == r.url), ""), "url": r.url, "score": r.score, "track": "", "reason": (r.reasons[0] if r.reasons else "")[:180]} for r in results if float(r.score) >= 75]
+        hot_jobs = [{"title": next((c.title for c in candidates if c.url == r.url), ""), "source": next((c.source for c in candidates if c.url == r.url), ""), "url": r.url, "score": r.score, "track": "", "reason": (r.reasons[0] if r.reasons else "")[:180]} for r in results if float(r.score) >= 75 and str(r.decision).upper() in {"APPLIED", "FRENCH"}]
 
     cache_db.close()
 

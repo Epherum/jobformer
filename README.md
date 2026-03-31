@@ -303,7 +303,7 @@ Expected tabs:
 - `Tech_Today`
 - `Jobs`
 
-Expected columns A:J:
+Expected columns A:K:
 - A `source`
 - B `labels`
 - C `title`
@@ -314,6 +314,7 @@ Expected columns A:J:
 - H `decision`
 - I `score`
 - J `reason`
+- K `feedback`
 
 ## Source-specific notes
 

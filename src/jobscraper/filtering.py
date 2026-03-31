@@ -11,10 +11,22 @@ from typing import Iterable, List
 
 DECISION_NEW = "NEW"
 DECISION_TOO_SENIOR = "OVERSENIOR"
+DECISION_APPLIED = "APPLIED"
+DECISION_NOT_FIT = "NOT FIT"
+DECISION_FRENCH = "FRENCH"
+DECISION_GERMAN = "GERMAN"
+
+
+def normalize_manual_decision(value: str) -> str:
+    v = " ".join((value or "").strip().upper().replace("_", " ").split())
+    if not v:
+        return ""
+    if v == "SKIPPED NOT A FIT":
+        return DECISION_NOT_FIT
+    return v
 
 
 TOO_SENIOR_PATTERNS: list[str] = [
-    r"\bexecutive\b",
     r"\bvp\b",
     r"\bvice\s+president\b",
     r"\bdirector\b",
@@ -36,7 +48,13 @@ TOO_SENIOR_PATTERNS: list[str] = [
 
 # Keep this list conservative; it is easy to over-filter.
 DELETE_PATTERNS: list[str] = [
-    # Sales-heavy pipeline roles (allowed)
+    # Hard sales exclusions
+    r"sur\s*terrain",
+    r"terrain\b",
+    r"porte[\s-]*[àa]\s*porte",
+    r"door[\s-]*to[\s-]*door",
+    r"field\s+sales",
+    r"outside\s+sales",
 
     # Non-software engineering / trades you flagged (FR/EN)
     r"électricit",
@@ -80,8 +98,6 @@ DELETE_PATTERNS: list[str] = [
     r"\bchauffeur\b",
     r"\bpréparateur\b",
     r"\bpreparateur\b",
-    r"\bvendeur\b",
-    r"\bvendeuse\b",
 ]
 
 _RE_TOO_SENIOR = re.compile("|".join(f"(?:{p})" for p in TOO_SENIOR_PATTERNS), flags=re.IGNORECASE)
@@ -366,7 +382,14 @@ def is_english_title(title: str) -> bool:
     return True
 
 
-def is_relevant(text: str, rules: Iterable[KeywordRule] = BROAD_RULES) -> bool:
+def is_sales_relevant(text: str, rules: Iterable[KeywordRule] = BROAD_RULES) -> bool:
     if is_blocked(text):
         return False
-    return len(match_labels(text, rules=rules)) > 0
+    labels = set(match_labels(text, rules=rules))
+    return "SALES" in labels
+
+
+# Current operating mode: scrape everything, but only sales roles are considered relevant
+# for routing, scoring, and alerts.
+def is_relevant(text: str, rules: Iterable[KeywordRule] = BROAD_RULES) -> bool:
+    return is_sales_relevant(text, rules=rules)

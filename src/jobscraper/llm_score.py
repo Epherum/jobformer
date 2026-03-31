@@ -59,6 +59,8 @@ def score_job_with_local_llm(
     model: str = DEFAULT_MODEL,
     timeout_s: int = 90,
     retries: int = 1,
+    learned_bias: str = "",
+    learned_feedback: str = "",
 ) -> LLMScore:
     snippet = (page_text or "")[:1800]
     is_sales = _guess_is_sales(title, page_text)
@@ -67,20 +69,31 @@ def score_job_with_local_llm(
         prompt = f"""
 You are scoring ONLY a SALES job for this candidate.
 
-Candidate goal for sales track:
-- High-value B2B sales where technical background helps.
-- Best fits: Sales Engineer, Solutions Engineer, Pre-sales, Solution Consultant, Technical Account Manager, Enterprise/SMB Account Executive, Business Development in B2B tech.
-- Strong positive if it is B2B, SaaS, enterprise, pipeline/prospecting/closing, demos, discovery, solution selling.
-- Strong negative if it is call center, telemarketing, customer support disguised as sales, retail counter sales, or low-value phone work.
+Current rule set learned from prior manual reviews:
+- Sales-only mode. If the job is clearly sales, it is generally a good fit.
+- Strong positives: B2B sales, account management, business development, commercial roles, prospecting, portfolio management, solution selling, CRM, and strong spoken English.
+- French-speaking requirement is a SOFT negative only. Do not reject for French alone. Usually score around 65-75 unless the rest of the role is unusually strong.
+- Strong negatives: German-speaking requirement, terrain or field sales, door-to-door sales, low-value call-center style sales, cashier/caisse style work, and clearly oversenior roles.
+- Also score lower when the role requires much more experience than the candidate likely has.
+- Use prior human feedback when provided as background signal only, not as a hard override.
 
 Scoring philosophy:
-- A strong B2B tech-adjacent sales role can score 80-95.
-- A generic sales role can be 50-74.
-- A lame call-center style role should be very low.
+- Good sales fit by default: 80-95.
+- Very strong B2B / SaaS / account executive / business development / sales engineer / pre-sales role: 90-98.
+- French-speaking sales role: usually around 70.
+- Borderline or lower-value sales role: 55-79.
+- Terrain / cashier / obvious low-fit role: 0-35.
+
+Also predict the recommended sheet action as suggested_decision using one of:
+- APPLIED
+- NOT FIT
+- FRENCH
+- OVERSENIOR
 
 Return ONLY strict JSON with keys:
 - score: number 0-100
 - decision: "yes" | "maybe" | "no"
+- suggested_decision: one of APPLIED | NOT FIT | FRENCH | OVERSENIOR
 - reasons: array with exactly 1 short sentence (max ~160 chars)
 
 Title: {title}
@@ -89,34 +102,17 @@ Location: {location}
 URL: {url}
 Job text:
 {snippet}
+
+Prior human feedback bias: {learned_bias or "none"}
+Prior human feedback details: {learned_feedback or "none"}
 """.strip()
     else:
-        prompt = f"""
-You are scoring ONLY a TECH job for this candidate.
-
-Candidate profile for tech track:
-- Master's in Artificial Intelligence.
-- Best-fit stack: React, Next.js, TypeScript, Node.js, APIs, PostgreSQL, Prisma, Supabase, Docker.
-- Also strong fit: Data, Analytics, AI/ML, Computer Vision, RAG, LLMs.
-
-Scoring philosophy:
-- Junior or close-to-resume roles can score ABOVE 85.
-- A strong close match to the resume/stack should score very high.
-- Appian / low-code / unrelated enterprise tooling can still be technical, but should score lower if not close to the stack.
-- Non-software / non-data / non-AI engineering roles should score low.
-
-Return ONLY strict JSON with keys:
-- score: number 0-100
-- decision: "yes" | "maybe" | "no"
-- reasons: array with exactly 1 short sentence (max ~160 chars)
-
-Title: {title}
-Company: {company}
-Location: {location}
-URL: {url}
-Job text:
-{snippet}
-""".strip()
+        return LLMScore(
+            score=0,
+            decision="no",
+            reasons=["Skipped: non-sales job in sales-only mode."],
+            model="rule:skip-non-sales",
+        )
 
     backend = (os.getenv("LLM_BACKEND") or "llama_cpp").strip().lower()
     if backend != "llama_cpp":
@@ -154,6 +150,7 @@ Job text:
 
     score = float(obj.get("score", 0))
     decision = str(obj.get("decision", "")).strip().lower()
+    suggested_decision = str(obj.get("suggested_decision", "") or "").strip().upper()
     reasons = obj.get("reasons", [])
     if isinstance(reasons, str):
         reasons = [reasons.strip()]
@@ -169,5 +166,7 @@ Job text:
         score = 100
     if decision not in {"yes", "no", "maybe"}:
         decision = "maybe"
-
-    return LLMScore(score=score, decision=decision, reasons=[str(r) for r in reasons], model=(data.get("model", model) if data else model))
+    if suggested_decision not in {"APPLIED", "NOT FIT", "FRENCH", "OVERSENIOR"}:
+        suggested_decision = "NOT FIT"
+    model_name = (data.get("model", model) if data else model)
+    return LLMScore(score=score, decision=suggested_decision, reasons=[str(r) for r in reasons], model=model_name)

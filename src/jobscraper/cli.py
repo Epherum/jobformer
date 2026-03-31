@@ -1055,26 +1055,16 @@ Start-Process $Chrome -ArgumentList @(
                                 extract_missing=False,
                                 progress_cb=_on_score,
                             )
-                            summary_tech = score_unscored_sheet_rows_from_cache(
-                                db_path=Path("data") / "jobs.sqlite3",
-                                model=model,
-                                sheet_cfg=SheetsConfig(sheet_id=sheet_id, tab=cfg.tech_today_tab, account=cfg.sheet_account),
-                                max_jobs=max_jobs,
-                                concurrency=2,
-                                extract_missing=False,
-                                progress_cb=_on_score,
-                            )
 
-                            pass_scored = int(summary_sales.get("scored", 0) or 0) + int(summary_tech.get("scored", 0) or 0)
-                            pass_updated = int(summary_sales.get("updated_rows", 0) or 0) + int(summary_tech.get("updated_rows", 0) or 0)
-                            pass_errors = int(summary_sales.get("errors", 0) or 0) + int(summary_tech.get("errors", 0) or 0)
+                            pass_scored = int(summary_sales.get("scored", 0) or 0)
+                            pass_updated = int(summary_sales.get("updated_rows", 0) or 0)
+                            pass_errors = int(summary_sales.get("errors", 0) or 0)
                             total_scored += pass_scored
                             total_updated += pass_updated
                             total_errors += pass_errors
                             hot_jobs.extend(summary_sales.get("hot_jobs") or [])
-                            hot_jobs.extend(summary_tech.get("hot_jobs") or [])
 
-                            missing = int(summary_sales.get("missing", 0) or 0) + int(summary_tech.get("missing", 0) or 0)
+                            missing = int(summary_sales.get("missing", 0) or 0)
                             state.unscored_remaining = missing
                             state.score_scored = state.score_target
 
@@ -1100,7 +1090,7 @@ Start-Process $Chrome -ArgumentList @(
             # All-jobs sheet sync is now a manual command (push-all-jobs).
 
             # Send ONE pushover notification per cycle.
-            # - hot jobs only (score >= 75)
+            # - sales hot jobs only (score >= 75)
             # - errors/issues even if there are no hot jobs
             state.phase = "Notify"
             notify_task.last_exit = 0

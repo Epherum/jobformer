@@ -13,7 +13,7 @@ class TransferConfig:
     from_tabs: list[str]
     to_tab: str = "Jobs"
     account: str = "wassimfekih2@gmail.com"
-    range_cols: str = "A:J"
+    range_cols: str = "A:L"
 
 
 def _run_gog(args: List[str]) -> str:
@@ -33,9 +33,9 @@ def fetch_rows_for_tab(cfg: TransferConfig, tab: str) -> list[list[str]]:
     norm: list[list[str]] = []
     for r in rows:
         r = list(r)
-        if len(r) < 10:
-            r = r + [""] * (10 - len(r))
-        norm.append(r[:10])
+        if len(r) < 12:
+            r = r + [""] * (12 - len(r))
+        norm.append(r[:12])
     return norm
 
 
