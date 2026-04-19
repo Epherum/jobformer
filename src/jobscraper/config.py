@@ -51,6 +51,7 @@ class AppConfig:
     sales_today_tab: str = "Sales_Today"
     tech_today_tab: str = "Tech_Today"
     all_jobs_tab: str = "Jobs"
+    applied_jobs_tab: str = "Applied Jobs"
 
     # Default CDP URL from WSL -> Windows host.
     # Note: if Chrome binds only to 127.0.0.1 on Windows, use a portproxy rule.
@@ -108,6 +109,7 @@ def load_config(env_path: Optional[Path] = None) -> AppConfig:
         sales_today_tab=(os.getenv("SALES_TODAY_TAB") or AppConfig.sales_today_tab).strip(),
         tech_today_tab=(os.getenv("TECH_TODAY_TAB") or AppConfig.tech_today_tab).strip(),
         all_jobs_tab=(os.getenv("ALL_JOBS_TAB") or AppConfig.all_jobs_tab).strip(),
+        applied_jobs_tab=(os.getenv("APPLIED_JOBS_TAB") or AppConfig.applied_jobs_tab).strip(),
         cdp_url=(os.getenv("CDP_URL") or AppConfig.cdp_url).strip(),
         interval_min=geti("INTERVAL_MIN", AppConfig.interval_min),
     )

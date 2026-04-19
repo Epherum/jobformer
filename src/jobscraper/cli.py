@@ -526,7 +526,7 @@ def start() -> None:
     menu = [
         ("Dashboard (continuous)", ["dashboard"]),
         ("Dashboard (once)", ["dashboard", "--once"]),
-        ("Transfer Sales_Today + Tech_Today → Jobs", ["transfer-today"]),
+        ("Transfer reviewed jobs → Jobs / Applied Jobs", ["transfer-today"]),
         ("Smoke test", ["smoke"]),
         ("Quit", []),
     ]
@@ -1187,21 +1187,33 @@ def smoke() -> None:
 @app.command()
 def transfer_today(
     sheet_id: str = typer.Argument("", help="Google Sheet ID (or set SHEET_ID in data/config.env)."),
-    to_tab: str = typer.Option("", help="Destination tab (default Jobs)."),
+    to_tab: str = typer.Option("", help="Destination tab for non-applied rows (default Jobs)."),
+    applied_tab: str = typer.Option("", help="Destination tab for APPLIED rows (default Applied Jobs)."),
 ) -> None:
-    """Transfer Sales_Today and Tech_Today into Jobs, then clear both source tabs."""
+    """Transfer Sales_Today and Tech_Today, splitting APPLIED rows into a separate tab, then clear both source tabs."""
     from .transfer_today import TransferConfig, transfer_today
 
     cfg = _load_cfg_and_chdir()
     sheet_id = sheet_id or cfg.sheet_id
     to_tab = to_tab or cfg.all_jobs_tab
+    applied_tab = applied_tab or cfg.applied_jobs_tab
 
     if not sheet_id:
         console.print("sheet_id is required (pass as arg or set SHEET_ID in data/config.env)")
         raise typer.Exit(2)
 
-    n = transfer_today(TransferConfig(sheet_id=sheet_id, from_tabs=[cfg.sales_today_tab, cfg.tech_today_tab], to_tab=to_tab, account=cfg.sheet_account))
-    console.print(f"moved_rows={n}")
+    summary = transfer_today(
+        TransferConfig(
+            sheet_id=sheet_id,
+            from_tabs=[cfg.sales_today_tab, cfg.tech_today_tab],
+            to_tab=to_tab,
+            applied_tab=applied_tab,
+            account=cfg.sheet_account,
+        )
+    )
+    console.print(
+        f"moved_rows_total={summary['total']} jobs={summary['jobs']} applied={summary['applied']}"
+    )
 
 
 @app.command(name="score-today")

@@ -168,6 +168,7 @@ SHEET_ACCOUNT=wassimfekih2@gmail.com
 JOBS_TAB=Jobs
 JOBS_TODAY_TAB=Jobs_Today
 ALL_JOBS_TAB=Jobs
+APPLIED_JOBS_TAB=Applied Jobs
 SALES_TODAY_TAB=Sales_Today
 TECH_TODAY_TAB=Tech_Today
 
@@ -438,7 +439,7 @@ curl http://127.0.0.1:8080/health
 - cache text
 - score with llama.cpp
 - notify
-- transfer reviewed jobs from today tabs into `Jobs`
+- transfer reviewed jobs from today tabs into `Jobs`, with `APPLIED` rows split into `Applied Jobs`
 
 If doing a complete reset, the shortest recovery checklist is:
 1. clone repo
