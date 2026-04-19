@@ -2,15 +2,12 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
-import json
 import os
 import re
-import shutil
 import signal
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -88,94 +85,6 @@ def _wait_http_ready(url: str, timeout_s: float = 90.0, poll_s: float = 0.5) -> 
             return True
         time.sleep(poll_s)
     return False
-
-
-def _probe_cdp(url: str, timeout_s: float = 3.0) -> tuple[bool, str]:
-    try:
-        with urllib.request.urlopen(url.rstrip('/') + '/json/version', timeout=timeout_s) as resp:
-            data = json.loads(resp.read().decode('utf-8', errors='replace'))
-        return True, str(data.get('Browser') or 'ok')
-    except Exception as e:
-        return False, str(e)
-
-
-def _candidate_local_chrome_bins() -> list[str]:
-    bins: list[str] = []
-    env_bin = (os.getenv('JOBFORMER_LOCAL_CHROME_BIN') or '').strip()
-    if env_bin:
-        bins.append(env_bin)
-
-    for name in ['google-chrome', 'chromium', 'chromium-browser']:
-        path = shutil.which(name)
-        if path:
-            bins.append(path)
-
-    pw_root = Path.home() / '.cache' / 'ms-playwright'
-    if pw_root.exists():
-        for path in sorted(pw_root.glob('chromium-*/chrome-linux64/chrome'), reverse=True):
-            bins.append(str(path))
-
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for item in bins:
-        if item and item not in seen and Path(item).exists():
-            seen.add(item)
-            ordered.append(item)
-    return ordered
-
-
-@contextmanager
-def _managed_cdp_url(configured_url: str):
-    ok, detail = _probe_cdp(configured_url)
-    if ok:
-        yield configured_url, f'configured ({detail})'
-        return
-
-    chrome_bin = next(iter(_candidate_local_chrome_bins()), '')
-    if not chrome_bin:
-        yield configured_url, f'unreachable and no local Chrome found: {detail}'
-        return
-
-    port = 9331
-    for _ in range(20):
-        if not _tcp_ready('127.0.0.1', port, timeout_s=0.2):
-            break
-        port += 1
-
-    profile_dir = Path(tempfile.mkdtemp(prefix='jobformer-cdp-'))
-    fallback_url = f'http://127.0.0.1:{port}'
-    proc: Optional[subprocess.Popen] = None
-    try:
-        cmd = [
-            chrome_bin,
-            '--headless=new',
-            f'--remote-debugging-port={port}',
-            f'--user-data-dir={profile_dir}',
-            '--no-first-run',
-            '--no-default-browser-check',
-            '--disable-gpu',
-            '--disable-software-rasterizer',
-            '--disable-dev-shm-usage',
-            'https://www.tanitjobs.com/jobs/',
-        ]
-        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if _wait_http_ready(fallback_url + '/json/version', timeout_s=20.0, poll_s=0.5):
-            ok, browser = _probe_cdp(fallback_url, timeout_s=2.0)
-            if ok:
-                yield fallback_url, f'local fallback via {Path(chrome_bin).name} ({browser})'
-                return
-        yield configured_url, f'configured unreachable ({detail}); local fallback failed'
-    finally:
-        if proc is not None:
-            try:
-                proc.terminate()
-                proc.wait(timeout=5)
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-        shutil.rmtree(profile_dir, ignore_errors=True)
 
 
 @contextmanager
@@ -706,9 +615,6 @@ def dashboard(
     all_jobs_tab = all_jobs_tab or cfg.all_jobs_tab
     interval_min = interval_min or cfg.interval_min
 
-    cdp_ctx = _managed_cdp_url(cfg.cdp_url)
-    cdp, cdp_note = cdp_ctx.__enter__()
-
     effective_cfg = AppConfig(
         base_dir=cfg.base_dir,
         sheet_id=sheet_id,
@@ -718,13 +624,9 @@ def dashboard(
         sales_today_tab=cfg.sales_today_tab,
         tech_today_tab=cfg.tech_today_tab,
         all_jobs_tab=all_jobs_tab,
-        applied_jobs_tab=cfg.applied_jobs_tab,
-        cdp_url=cdp,
+        cdp_url=cfg.cdp_url,
         interval_min=interval_min,
     )
-
-    if cdp_note.startswith('local fallback'):
-        console.print(f"CDP: {cdp_note}")
 
     if show_windows_snippet:
         # Optional helper snippet to quickly start CDP Chrome from Windows.
@@ -768,7 +670,7 @@ Start-Process $Chrome -ArgumentList @(
     # Tier-1 sources are server-side; Tier-2 are CDP-based (Windows Chrome).
     sources = ["keejob", "tanitjobs"]
 
-    cdp = effective_cfg.cdp_url
+    cdp = cfg.cdp_url
 
     tasks: List[Task] = [
         Task(
@@ -1262,40 +1164,15 @@ Start-Process $Chrome -ArgumentList @(
     finally:
         if live_ctx:
             live_ctx.__exit__(None, None, None)
-        cdp_ctx.__exit__(None, None, None)
 
 
 @app.command()
 def smoke() -> None:
     """Quick dependency check: SQLite, CDP, Pushover config, Sheets access."""
-    from .smoke import CheckResult, smoke_checks
-    from .config import AppConfig
+    from .smoke import smoke_checks
 
     cfg = _load_cfg_and_chdir()
-    cdp_ctx = _managed_cdp_url(cfg.cdp_url)
-    cdp, cdp_note = cdp_ctx.__enter__()
-    try:
-        effective_cfg = AppConfig(
-            base_dir=cfg.base_dir,
-            sheet_id=cfg.sheet_id,
-            sheet_account=cfg.sheet_account,
-            jobs_tab=cfg.jobs_tab,
-            jobs_today_tab=cfg.jobs_today_tab,
-            sales_today_tab=cfg.sales_today_tab,
-            tech_today_tab=cfg.tech_today_tab,
-            all_jobs_tab=cfg.all_jobs_tab,
-            applied_jobs_tab=cfg.applied_jobs_tab,
-            cdp_url=cdp,
-            interval_min=cfg.interval_min,
-        )
-        results = smoke_checks(effective_cfg)
-        if cdp_note.startswith('local fallback'):
-            results = [
-                CheckResult(r.name, r.ok, f"{r.detail} via local fallback" if r.name == 'cdp' and r.ok else r.detail)
-                for r in results
-            ]
-    finally:
-        cdp_ctx.__exit__(None, None, None)
+    results = smoke_checks(cfg)
 
     bad = 0
     for r in results:

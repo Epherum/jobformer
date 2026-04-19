@@ -95,10 +95,8 @@ cat > ~/.local/bin/jobformer <<'SH'
 set -e
 cd /home/wassim/jobformer
 if [ -z "$GOG_KEYRING_PASSWORD" ] && [ -f /home/wassim/.config/gog/keyring_password ]; then
-  read -r GOG_KEYRING_PASSWORD < /home/wassim/.config/gog/keyring_password
-  export GOG_KEYRING_PASSWORD
+  export GOG_KEYRING_PASSWORD="$(cat /home/wassim/.config/gog/keyring_password)"
 fi
-export PYTHONPATH="/home/wassim/jobformer/src${PYTHONPATH:+:$PYTHONPATH}"
 exec /home/wassim/jobformer/.venv/bin/jobformer "$@"
 SH
 chmod +x ~/.local/bin/jobformer
@@ -239,11 +237,6 @@ Quick check:
 ```bash
 curl http://172.21.160.1:9330/json/version
 ```
-
-If the Windows CDP endpoint is configured but unreachable from WSL, `jobformer smoke`
-and `jobformer dashboard --once` automatically fall back to a local headless Chrome
-CDP instance. The fallback runs quietly with GPU disabled to avoid noisy headless
-WebGL warnings.
 
 ## 9) Run checks
 
