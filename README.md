@@ -108,7 +108,7 @@ Test:
 
 ```bash
 jobformer --help
-jobformer start
+jobformer
 ```
 
 ## 4) Configure Google Sheets access
@@ -288,7 +288,7 @@ jobformer dashboard
 or use the menu:
 
 ```bash
-jobformer start
+jobformer
 ```
 
 Current menu is intentionally small:
@@ -355,7 +355,7 @@ jobformer dashboard --once
 ### Start menu
 
 ```bash
-jobformer start
+jobformer
 ```
 
 ### Transfer today tabs into Jobs

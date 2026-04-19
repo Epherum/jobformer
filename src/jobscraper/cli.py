@@ -33,6 +33,12 @@ app = typer.Typer(add_completion=False)
 console = Console()
 
 
+@app.callback(invoke_without_command=True)
+def _default_command(ctx: typer.Context) -> None:
+    if ctx.invoked_subcommand is None and not ctx.resilient_parsing:
+        start()
+
+
 def _self_cmd() -> str:
     # Best-effort: the current CLI entrypoint (jobformer/jobscraper).
     return (sys.argv[0] or "jobformer").strip() or "jobformer"
@@ -538,7 +544,7 @@ def start() -> None:
 
         if sys.stdin.isatty() and sys.stdout.isatty():
             choice = questionary.select(
-                "jobformer start",
+                "jobformer",
                 choices=labels,
                 use_shortcuts=True,
             ).ask()
@@ -549,7 +555,7 @@ def start() -> None:
             raise RuntimeError("not a tty")
     except Exception:
         # Fallback: numbered menu
-        table = Table(title="jobformer start", show_header=True, header_style="bold")
+        table = Table(title="jobformer", show_header=True, header_style="bold")
         table.add_column("#", width=3, justify="right")
         table.add_column("Action")
         for i, (label, _) in enumerate(menu, start=1):
