@@ -68,7 +68,7 @@ def main() -> int:
     p.add_argument("--sheet-id", default=None, help="Google Sheet ID to append new relevant jobs to")
     p.add_argument("--notify", action="store_true", help="Send Pushover notification when relevant_new > 0")
     p.add_argument("--sheet-tab", default="Jobs", help="Sheet tab name")
-    p.add_argument("--sheet-account", default="wassimfekih2@gmail.com", help="gog account email")
+    p.add_argument("--sheet-account", default="wassimfekih3@gmail.com", help="gog account email")
     args = p.parse_args()
 
     db = JobDB(Path("data") / "jobs.sqlite3")

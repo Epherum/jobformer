@@ -13,7 +13,7 @@ from .filtering import decision_for_title, match_labels, DECISION_TOO_SENIOR
 class SheetsConfig:
     sheet_id: str
     tab: str = "Jobs"
-    account: str = "wassimfekih2@gmail.com"
+    account: str = "wassimfekih3@gmail.com"
 
 
 def _run_gog(args: List[str]) -> str:

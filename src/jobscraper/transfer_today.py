@@ -13,7 +13,7 @@ class TransferConfig:
     from_tabs: list[str]
     to_tab: str = "Jobs"
     applied_tab: str = "Applied Jobs"
-    account: str = "wassimfekih2@gmail.com"
+    account: str = "wassimfekih3@gmail.com"
     range_cols: str = "A:M"
     decision_col: int = 8  # 1-indexed. H = decision.
     applied_value: str = "APPLIED"

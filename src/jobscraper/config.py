@@ -45,7 +45,7 @@ class AppConfig:
     base_dir: Path
 
     sheet_id: str = ""
-    sheet_account: str = "wassimfekih2@gmail.com"
+    sheet_account: str = "wassimfekih3@gmail.com"
     jobs_tab: str = "Jobs"
     jobs_today_tab: str = "Tech_Today"
     sales_today_tab: str = "Sales_Today"

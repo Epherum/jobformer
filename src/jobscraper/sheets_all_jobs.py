@@ -13,7 +13,7 @@ from .gog import run_gog
 class AllJobsSheetConfig:
     sheet_id: str
     tab: str = "All jobs"
-    account: str = "wassimfekih2@gmail.com"
+    account: str = "wassimfekih3@gmail.com"
 
 
 def _run_gog(args: List[str]) -> None:

@@ -276,7 +276,7 @@ def main() -> int:
     ap.add_argument("--start-url", default="https://www.tanitjobs.com/jobs/")
     ap.add_argument("--sheet-id", default="")
     ap.add_argument("--sheet-tab", default="Jobs")
-    ap.add_argument("--sheet-account", default="wassimfekih2@gmail.com")
+    ap.add_argument("--sheet-account", default="wassimfekih3@gmail.com")
     args = ap.parse_args()
 
     cfg = CatchupConfig(

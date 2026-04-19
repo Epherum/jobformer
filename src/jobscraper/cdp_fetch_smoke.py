@@ -35,7 +35,7 @@ def pick_one_unscored_per_domain(cfg: SheetsConfig, limit_domains: int = 10) -> 
 def main() -> int:
     sheet_id = (os.getenv('SHEET_ID') or '').strip()
     tab = (os.getenv('JOBS_TODAY_TAB') or 'Jobs_Today').strip()
-    account = (os.getenv('SHEET_ACCOUNT') or 'wassimfekih2@gmail.com').strip()
+    account = (os.getenv('SHEET_ACCOUNT') or 'wassimfekih3@gmail.com').strip()
     cdp_url = (os.getenv('CDP_URL') or '').strip()
 
     if not sheet_id:
