@@ -10,7 +10,7 @@ import requests
 
 
 DEFAULT_LLAMA_CPP_URL = "http://127.0.0.1:8080"
-DEFAULT_MODEL = "/home/wassim/models/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
+DEFAULT_MODEL = "/home/wassim/models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
 
 
 @dataclass(frozen=True)

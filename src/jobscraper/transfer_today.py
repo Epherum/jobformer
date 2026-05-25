@@ -7,6 +7,10 @@ from typing import List
 from .gog import run_gog
 
 
+DEFAULT_APPEND_BATCH_ROWS = 120
+DEFAULT_MAX_VALUES_JSON_BYTES = 25_000
+
+
 @dataclass
 class TransferConfig:
     sheet_id: str
@@ -17,6 +21,8 @@ class TransferConfig:
     range_cols: str = "A:M"
     decision_col: int = 8  # 1-indexed. H = decision.
     applied_value: str = "APPLIED"
+    append_batch_rows: int = DEFAULT_APPEND_BATCH_ROWS
+    max_values_json_bytes: int = DEFAULT_MAX_VALUES_JSON_BYTES
 
 
 def _run_gog(args: List[str]) -> str:
@@ -120,13 +126,43 @@ def ensure_tab_exists(cfg: TransferConfig, tab: str, header: list[str] | None = 
         ])
 
 
+def _chunk_rows_for_append(cfg: TransferConfig, rows: list[list[str]]) -> list[list[list[str]]]:
+    if not rows:
+        return []
+
+    batches: list[list[list[str]]] = []
+    i = 0
+    batch_rows = max(1, cfg.append_batch_rows)
+    max_payload_bytes = max(1, cfg.max_values_json_bytes)
+
+    while i < len(rows):
+        chunk = rows[i : i + batch_rows]
+        payload = json.dumps(chunk, ensure_ascii=False).encode("utf-8")
+
+        while len(payload) > max_payload_bytes and len(chunk) > 1:
+            chunk = chunk[: max(1, len(chunk) // 2)]
+            payload = json.dumps(chunk, ensure_ascii=False).encode("utf-8")
+
+        if len(payload) > max_payload_bytes:
+            raise ValueError(
+                f"Single row payload too large for gog append: {len(payload)} bytes exceeds {max_payload_bytes}"
+            )
+
+        batches.append(chunk)
+        i += len(chunk)
+
+    return batches
+
+
 def append_rows(cfg: TransferConfig, tab: str, rows: list[list[str]]) -> int:
     if not rows:
         return 0
-    _run_gog([
-        "gog", "sheets", "append", cfg.sheet_id, f"{tab}!{cfg.range_cols}", "--account", cfg.account,
-        "--values-json", json.dumps(rows, ensure_ascii=False), "--insert", "INSERT_ROWS"
-    ])
+
+    for chunk in _chunk_rows_for_append(cfg, rows):
+        _run_gog([
+            "gog", "sheets", "append", cfg.sheet_id, f"{tab}!{cfg.range_cols}", "--account", cfg.account,
+            "--values-json", json.dumps(chunk, ensure_ascii=False), "--insert", "INSERT_ROWS"
+        ])
     return len(rows)
 
 

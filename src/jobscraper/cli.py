@@ -118,6 +118,7 @@ def _llama_cpp_server_for_scoring(model_path: str):
     cmd = [
         server_bin,
         '-m', model_path,
+        '--alias', model_path,
         '--host', host,
         '--port', str(port),
         '-t', str(threads),
